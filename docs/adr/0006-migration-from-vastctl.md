@@ -9,7 +9,7 @@ Tetraeder's scheduled tasks call `uv run python scripts/vastctl.py nightly` and 
 ## Decision
 
 - Projects depend on taxameter through uv: `taxameter = { git = "https://github.com/lhns/taxameter", tag = "vX.Y.Z" }` under `[tool.uv.sources]`. Before a tag exists a local `{ path = "../taxameter", editable = true }` works; switching is one line.
-- `state_dir = ".vast"` keeps the old state, lock and fetch archives; the state format is unchanged.
+- `state_dir = ".vast"` keeps the old state, lock and fetch archives. The state format stays compatible: old records load, and statuses are normalised (`stopped`, `loading`) as each record is refreshed.
 - `scripts/vastctl.py` becomes a three-line shim that calls `taxameter.cli.main()`, so registered scheduled tasks keep working; it can go once the tasks call `uv run taxameter`.
 - The on-box files move from `/root/vast_box.sh` and `<repo>/scripts/*.sh` to `/root/.taxameter/`. A box provisioned by the old tool gets the new files on the next command; its old watchdog keeps running until the box is destroyed.
 
