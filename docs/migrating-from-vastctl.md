@@ -58,6 +58,7 @@ Known bad hosts ship with the Vast provider; add project-only ones under `[provi
 ```python
 import sys
 from taxameter.cli import main
+
 sys.exit(main())
 ```
 

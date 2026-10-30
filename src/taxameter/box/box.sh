@@ -27,7 +27,8 @@ TAXAMETER_STAGING="${TAXAMETER_STAGING:-$TAXAMETER_HOME/push}"
 TAXAMETER_LOGS_DIR="${TAXAMETER_LOGS_DIR:-runs/taxameter}"
 TAXAMETER_MODELS_DIR="${TAXAMETER_MODELS_DIR:-.hf_cache}"
 TAXAMETER_DONE_MARKER="${TAXAMETER_DONE_MARKER:-DONE}"
-export PATH="/opt/cargo/bin:$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+export HOME="${HOME:-/root}"  # supervisord and onstart may not set it; set -u would abort
+export PATH="$HOME/.local/bin:$PATH"
 cmd="${1:-health}"; shift || true
 
 count_procs() {  # number of processes matching any non-empty pattern; 0 when there is none
