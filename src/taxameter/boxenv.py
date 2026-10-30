@@ -35,6 +35,7 @@ def render_env(cfg: Config, provider: str, dns_host: str) -> str:
         "TAXAMETER_BATCH_LOG": box.batch_log,
         "TAXAMETER_BATCH_DONE": box.batch_done,
         "TAXAMETER_LOGS_DIR": box.logs_dir,
+        "TAXAMETER_LOGS_DEPTH": str(box.logs_depth),
         "TAXAMETER_PROVISION_HOOK": box.provision_hook,
         "TAXAMETER_VERIFY_HOOK": box.verify_hook,
         "TAXAMETER_DONE_MARKER": res.done_marker,

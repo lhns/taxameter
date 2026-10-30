@@ -25,6 +25,7 @@ export TAXAMETER_HOME
 TAXAMETER_DIR="${TAXAMETER_DIR:-/root/project}"; export TAXAMETER_DIR
 TAXAMETER_STAGING="${TAXAMETER_STAGING:-$TAXAMETER_HOME/push}"
 TAXAMETER_LOGS_DIR="${TAXAMETER_LOGS_DIR:-runs/taxameter}"
+TAXAMETER_LOGS_DEPTH="${TAXAMETER_LOGS_DEPTH:-2}"
 TAXAMETER_MODELS_DIR="${TAXAMETER_MODELS_DIR:-.hf_cache}"
 TAXAMETER_DONE_MARKER="${TAXAMETER_DONE_MARKER:-DONE}"
 export HOME="${HOME:-/root}"  # supervisord and onstart may not set it; set -u would abort
@@ -37,6 +38,11 @@ count_procs() {  # number of processes matching any non-empty pattern; 0 when th
   for p in "$@"; do [ -n "$p" ] && joined="${joined:+$joined|}($p)"; done
   [ -n "$joined" ] || { echo 0; return; }
   pgrep -f "$joined" | wc -l
+}
+
+newest_log() {  # mtime (epoch s) of the newest *.log up to TAXAMETER_LOGS_DEPTH levels below the logs dir
+  find "$TAXAMETER_DIR/$TAXAMETER_LOGS_DIR" -maxdepth "$TAXAMETER_LOGS_DEPTH" -name '*.log' -printf '%T@\n' 2>/dev/null \
+    | sort -n | tail -1 | cut -d. -f1
 }
 
 disk_probe() {  # sequential read bandwidth of /root in MB/s; measured once, cached (health runs every few minutes)
@@ -81,7 +87,7 @@ health() {
   fi
   # progress = newest write to any log under the logs dir (the batch log only changes per stage)
   local newest
-  newest=$(find "$TAXAMETER_DIR/$TAXAMETER_LOGS_DIR" -maxdepth 2 -name '*.log' -printf '%T@\n' 2>/dev/null | sort -n | tail -1 | cut -d. -f1)
+  newest=$(newest_log)
   [ -n "$newest" ] && echo "progress_age_s=$(( $(date +%s) - newest ))"
   echo "watchdog=$(pgrep -f 'idle_autost[o]p[.]sh' | wc -l)"
   echo "disk_free_gb=$(df -BG --output=avail /root 2>/dev/null | tail -1 | tr -dc '0-9')"

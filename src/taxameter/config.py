@@ -103,6 +103,7 @@ class Box:
     batch_log: str = ""  # repo-relative log with "] start" / "] done ... rc=N" lines
     batch_done: str = ""  # grep -E pattern of the batch log's final line
     logs_dir: str = "runs/taxameter"  # repo-relative: `run` logs; newest *.log mtime = progress
+    logs_depth: int = 2  # find -maxdepth below logs_dir for progress logs (jobs logging into nested run dirs)
     provision_hook: str = ""  # repo-relative script run during provision
     verify_hook: str = ""  # repo-relative script run by verify (replacement acceptance)
     run_env: dict[str, str] = field(default_factory=dict)  # env for `run` and `nightly`

@@ -27,7 +27,8 @@ needs_bash = pytest.mark.skipif(BASH is None, reason="no working bash")
 EXPECTED = [
     "TAXAMETER_HOME", "TAXAMETER_PROVIDER", "TAXAMETER_PROJECT", "TAXAMETER_DIR", "TAXAMETER_STAGING",
     "TAXAMETER_BUSY", "TAXAMETER_BATCH", "TAXAMETER_BATCH_LOG", "TAXAMETER_BATCH_DONE", "TAXAMETER_LOGS_DIR",
-    "TAXAMETER_PROVISION_HOOK", "TAXAMETER_VERIFY_HOOK", "TAXAMETER_DONE_MARKER", "TAXAMETER_RESULTS",
+    "TAXAMETER_LOGS_DEPTH", "TAXAMETER_PROVISION_HOOK", "TAXAMETER_VERIFY_HOOK", "TAXAMETER_DONE_MARKER",
+    "TAXAMETER_RESULTS",
     "TAXAMETER_PACK_EXTRA", "TAXAMETER_PACK_INCLUDE", "TAXAMETER_PACK_WHOLE", "TAXAMETER_PACK_EXCLUDE",
     "TAXAMETER_MODELS_DIR", "TAXAMETER_IDLE_MIN", "TAXAMETER_BUSY_UTIL", "TAXAMETER_DNS_HOST",
 ]  # fmt: skip
@@ -144,3 +145,26 @@ def test_pack_results_selection(tmp_path):
     with tarfile.open(out) as t:
         names = sorted(m.name for m in t.getmembers() if m.isfile())
     assert names == ["extra/e.log", "results/a/DONE", "results/a/r.json", "whole/w/data.bin"]
+
+
+@needs_bash
+@pytest.mark.parametrize(("depth", "found"), [("2", False), ("3", True)])
+def test_progress_log_depth(tmp_path, depth, found):
+    log = tmp_path / "runs" / "gpu" / "s0" / "job.log"  # 3 levels below logs_dir "runs"
+    log.parent.mkdir(parents=True)
+    log.write_text("x")
+    box = _script("box.sh")
+    r = subprocess.run(
+        [BASH, "-c", f'. "{box.as_posix()}"; newest_log'],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={
+            "PATH": "/usr/bin:/bin",
+            "TAXAMETER_HOME": tmp_path.as_posix(),  # no env file there: the settings below apply
+            "TAXAMETER_DIR": tmp_path.as_posix(),
+            "TAXAMETER_LOGS_DIR": "runs",
+            "TAXAMETER_LOGS_DEPTH": depth,
+        },
+    )
+    assert bool(r.stdout.strip()) is found, r.stderr
