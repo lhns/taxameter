@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 CONFIG_NAME = "taxameter.toml"
+DEFAULT_MIN_CUDA = 12.8
 
 DEFAULT_POLICY: dict[str, Any] = {
     "idle_stop_min": 20,  # running + idle this long -> fetch, then stop
@@ -76,7 +77,7 @@ class Offers:
     min_disk_gb: float = 50
     min_reliability: float = 0.99
     min_inet_mbps: float = 500
-    min_cuda: float = 12.4
+    min_cuda: float = 0  # highest CUDA the host driver must support; 0: from the image name (cuda:12.8...), else 12.8
     interruptible: bool = False
 
 
@@ -182,6 +183,14 @@ class Config:
             except OSError:
                 pass
         return f"{self.image.name}:{tag}" if tag else self.image.name
+
+    def min_cuda(self) -> float:
+        """Offer filter on the host driver's CUDA version: a host below the image's CUDA leaves the box stuck in
+        "loading" (seen with CUDA 12.5 hosts and a 12.8 image)."""
+        if self.offers.min_cuda:
+            return float(self.offers.min_cuda)
+        m = re.search(r"cuda[:-]?(\d+\.\d+)", self.image_ref(), re.I)
+        return float(m.group(1)) if m else DEFAULT_MIN_CUDA
 
     def model_specs(self) -> list[str]:
         out = list(self.models.specs)
