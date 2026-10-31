@@ -1,6 +1,6 @@
 # 0005. The instance cap counts the whole account
 
-Status: Accepted
+Status: Superseded by 0007
 
 ## Context
 

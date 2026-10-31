@@ -1,6 +1,7 @@
 """Project configuration: `taxameter.toml` at the repo root (ADR 0004).
 
-Policy precedence: DEFAULT_POLICY, then `[policy]`, then `<state_dir>/config.json` if it exists.
+Policy precedence: DEFAULT_POLICY, then `[policy]` (which must set REQUIRED_POLICY), then `<state_dir>/config.json`
+if it exists.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ DEFAULT_POLICY: dict[str, Any] = {
     "runway_rent_min_h": 3,  # below: never rent
     "auto_replace": False,  # an automatic replacement could start a second paid box
     "max_price_per_hour": 0.45,
-    "max_instances": 1,  # instances up on the whole account (ADR 0005)
+    "max_instances": 1,  # instances of this project (label = project name) up at once (ADR 0007)
     "max_instances_during_migration": 2,  # make-before-break: old + replacement overlap while it is verified
     "salvage_every_h": 2,  # start a stopped old box this often to fetch its unfetched results
     "salvage_window_min": 30,  # ... and stop it again after this long
@@ -46,9 +47,14 @@ DEFAULT_POLICY: dict[str, Any] = {
     "provision_wait_min": 40,
     "fetch_wait_min": 10,
     "nightly_wait_min": 90,  # `nightly` gives the on-box run this long, then fetches whatever exists
-    "max_box_hours": 3,  # hard cap: a managed box running longer is STOPPED (disk kept)
     "rent_attempts": 3,  # offers tried when the chosen one was taken meanwhile (OfferGone)
 }
+
+
+# No default on purpose: the spend cap is a decision the project makes. A managed box running longer than this
+# many hours is STOPPED (disk kept).
+REQUIRED_POLICY = ("max_box_hours",)
+POLICY_KEYS = frozenset(DEFAULT_POLICY) | set(REQUIRED_POLICY)
 
 
 class ConfigError(ValueError):
@@ -57,7 +63,7 @@ class ConfigError(ValueError):
 
 @dataclass
 class Project:
-    name: str = "project"  # instance label; remote dir default /root/<name>
+    name: str = ""  # required: instance label (the per-project cap counts it); remote dir default /root/<name>
     remote_dir: str = ""
     state_dir: str = ".taxameter"
     ssh_key: str = "~/.ssh/taxameter_ed25519"
@@ -248,9 +254,17 @@ def load(path: Path | None = None) -> Config:
         if name in data:
             setattr(cfg, name, _section(cls, data[name], name))
     policy = data.get("policy", {})
-    unknown = sorted(set(policy) - set(DEFAULT_POLICY))
+    unknown = sorted(set(policy) - POLICY_KEYS)
     if unknown:
         raise ConfigError(f"unknown key(s) in [policy]: {', '.join(unknown)}")
+    if not str(cfg.project.name).strip():
+        raise ConfigError(
+            f"{path}: [project] name is required and must not be empty (it is the instance label the per-project cap "
+            "counts; two projects with the same name would share a cap)"
+        )
+    missing = [k for k in REQUIRED_POLICY if k not in policy]
+    if missing:
+        raise ConfigError(f"{path}: [policy] {', '.join(missing)} is required (no default: it caps spend per box)")
     cfg.policy.update(policy)
     return cfg
 
@@ -266,4 +280,4 @@ def local_policy_overrides(state_dir: Path) -> tuple[dict[str, Any], str | None]
         return {}, f"{p} is not valid JSON; ignored"
     if not isinstance(data, dict):
         return {}, f"{p} is not a JSON object; ignored"
-    return {k: v for k, v in data.items() if k in DEFAULT_POLICY}, None
+    return {k: v for k, v in data.items() if k in POLICY_KEYS}, None

@@ -80,8 +80,12 @@ def cmd_adopt(ctx: Ctx, a: argparse.Namespace) -> dict:
     inst = ctx.provider.instance(a.instance)
     if not inst:
         raise ProviderError(f"instance {a.instance} not found")
+    name = ctx.cfg.project.name
+    if inst.label != name:
+        ctx.provider.set_label(a.instance, name)
+        say(f"relabelled instance {a.instance}: {inst.label or '-'} -> {name}")
     rec = ctx.store.rec(a.instance, create=True)
-    rec.update({"host_id": inst.host_id, "created": inst.started_at, "label": inst.label, "role": "active"})
+    rec.update({"host_id": inst.host_id, "created": inst.started_at, "label": name, "role": "active"})
     for d in a.runs if a.runs is not None else ctx.cfg.results.dirs:
         rec["runs"].setdefault(d, {"ok": False})
     ctx.store.state["current"] = str(a.instance)
@@ -348,7 +352,7 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "create":
             s.add_argument("--offer", help="offer id from `offers` (never falls through to another offer)")
             s.add_argument("--auto", action="store_true", help="best score within max price")
-            s.add_argument("--allow-second", action="store_true", help="skip the account-wide instance cap")
+            s.add_argument("--allow-second", action="store_true", help="skip the per-project instance cap")
             s.add_argument("--image", help="container image (default [image] in taxameter.toml)")
     s = sub.add_parser("adopt", parents=[common], help="manage an existing instance")
     s.add_argument("instance")

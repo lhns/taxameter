@@ -85,6 +85,8 @@ class FakeVast:
                 return httpx.Response(200, json={"instances": self.instances.get(iid)})
             if req.method == "PUT":
                 body = json.loads(req.content)
+                if "label" in body:
+                    self.instances[iid]["label"] = body["label"]
                 if body.get("state") == "stopped":
                     self.instances[iid]["actual_status"] = "exited"
                 return httpx.Response(200, json={"success": True})
@@ -227,6 +229,7 @@ def make_cfg(root: Path, key: Path) -> Config:
     cfg.box.logs_dir = "runs/vast"
     cfg.models.from_toml = "bench/spec/phase0.toml"
     cfg.models.from_key = "model.*.hf"
+    cfg.policy["max_box_hours"] = 3
     return cfg
 
 
