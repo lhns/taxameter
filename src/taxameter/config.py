@@ -63,7 +63,7 @@ class ConfigError(ValueError):
 
 @dataclass
 class Project:
-    name: str = "project"  # instance label; remote dir default /root/<name>
+    name: str = ""  # required: instance label (the per-project cap counts it); remote dir default /root/<name>
     remote_dir: str = ""
     state_dir: str = ".taxameter"
     ssh_key: str = "~/.ssh/taxameter_ed25519"
@@ -257,6 +257,11 @@ def load(path: Path | None = None) -> Config:
     unknown = sorted(set(policy) - POLICY_KEYS)
     if unknown:
         raise ConfigError(f"unknown key(s) in [policy]: {', '.join(unknown)}")
+    if not str(cfg.project.name).strip():
+        raise ConfigError(
+            f"{path}: [project] name is required and must not be empty (it is the instance label the per-project cap "
+            "counts; two projects with the same name would share a cap)"
+        )
     missing = [k for k in REQUIRED_POLICY if k not in policy]
     if missing:
         raise ConfigError(f"{path}: [policy] {', '.join(missing)} is required (no default: it caps spend per box)")

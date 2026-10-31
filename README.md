@@ -27,7 +27,7 @@ Minimal `taxameter.toml` (all tables are in [ADR 0004](docs/adr/0004-project-con
 
 ```toml
 [project]
-name = "myproj"            # instance label; the instance cap counts only boxes with this label
+name = "myproj"            # required, unique per project: the instance label; the instance cap counts boxes with it
 
 [image]
 name = "vastai/pytorch"
@@ -42,7 +42,7 @@ max_box_hours = 12         # required, no default: a managed box running longer 
 max_instances = 1          # this project's boxes up at once (default 1)
 ```
 
-`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`); `max_box_hours` is the only required key.
+`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`). `[project] name` and `[policy] max_box_hours` are required.
 
 ## Usage
 
@@ -81,10 +81,10 @@ Copy these into the project's AGENTS.md.
 Decisions are in [docs/adr](docs/adr). In short:
 
 - **Guard layer, not a cloud abstraction** (ADR 0001). The value is caps, watchdog, blocklist, redaction and the fetch-verify-destroy flow. Python, httpx only, offline tests.
-- **Provider interface** (ADR 0002). Nine methods: `offers`, `create`, `instance`, `instances`, `start`, `stop`, `reboot`, `destroy`, `credit`, returning normalised `Offer`, `Instance` and `Endpoint`. `OfferGone` makes renting fall through to the next offer (at most 3); any other create error aborts.
+- **Provider interface** (ADR 0002). Ten methods: `offers`, `create`, `instance`, `instances`, `start`, `stop`, `set_label`, `reboot`, `destroy`, `credit`, returning normalised `Offer`, `Instance` and `Endpoint`. `OfferGone` makes renting fall through to the next offer (at most 3); any other create error aborts.
 - **SkyPilot** (ADR 0003). Evaluated; the seam allows a backend later, but it is not built: it brings a second state store and its own lifecycle, and lacks USD/h caps and a host blocklist.
 - **Per-project config** (ADR 0004). `taxameter.toml` holds image, pushed paths, box patterns, results, models, nightly script and policy. The box scripts are generic and read a rendered env file in `/root/.taxameter/`; projects plug in `provision_hook` and `verify_hook` scripts.
-- **Per-project instance cap** (ADR 0007, supersedes the account-wide cap of 0005). Only instances labelled with the project name count; there is no cross-project cap, so total spend across projects is bounded only by each project's caps.
+- **Per-project instance cap** (ADR 0007, supersedes the account-wide cap of 0005). Instances labelled with the project name, and instances adopted into the project (`adopt` relabels them), count; there is no cross-project cap, so total spend across projects is bounded only by each project's caps.
 - **Migration** (ADR 0006, [docs/migrating-from-vastctl.md](docs/migrating-from-vastctl.md)). Keep `state_dir = ".vast"`, replace `scripts/vastctl.py` by a shim.
 
 Layout:

@@ -106,6 +106,9 @@ class Api:
     def set_state(self, iid: str, state: str) -> dict:
         return self.req("PUT", f"/api/v0/instances/{iid}/", json={"state": state})
 
+    def set_label(self, iid: str, label: str) -> dict:
+        return self.req("PUT", f"/api/v0/instances/{iid}/", json={"label": label})
+
     def reboot(self, iid: str) -> dict:
         return self.req("PUT", f"/api/v0/instances/reboot/{iid}/", json={})
 
@@ -279,6 +282,9 @@ class VastProvider:
 
     def stop(self, iid: str) -> None:
         self.api.set_state(iid, "stopped")
+
+    def set_label(self, iid: str, label: str) -> None:
+        self.api.set_label(iid, label)
 
     def reboot(self, iid: str) -> None:
         self.api.reboot(iid)

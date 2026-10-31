@@ -85,6 +85,8 @@ class FakeVast:
                 return httpx.Response(200, json={"instances": self.instances.get(iid)})
             if req.method == "PUT":
                 body = json.loads(req.content)
+                if "label" in body:
+                    self.instances[iid]["label"] = body["label"]
                 if body.get("state") == "stopped":
                     self.instances[iid]["actual_status"] = "exited"
                 return httpx.Response(200, json={"success": True})

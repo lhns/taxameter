@@ -80,8 +80,12 @@ def cmd_adopt(ctx: Ctx, a: argparse.Namespace) -> dict:
     inst = ctx.provider.instance(a.instance)
     if not inst:
         raise ProviderError(f"instance {a.instance} not found")
+    name = ctx.cfg.project.name
+    if inst.label != name:
+        ctx.provider.set_label(a.instance, name)
+        say(f"relabelled instance {a.instance}: {inst.label or '-'} -> {name}")
     rec = ctx.store.rec(a.instance, create=True)
-    rec.update({"host_id": inst.host_id, "created": inst.started_at, "label": inst.label, "role": "active"})
+    rec.update({"host_id": inst.host_id, "created": inst.started_at, "label": name, "role": "active"})
     for d in a.runs if a.runs is not None else ctx.cfg.results.dirs:
         rec["runs"].setdefault(d, {"ok": False})
     ctx.store.state["current"] = str(a.instance)

@@ -609,11 +609,14 @@ class RentRefused(ProviderError):
 
 
 def check_cap(ctx: Ctx, overlap_with: str | None = None) -> list[Instance]:
-    """ADR 0007: refuse when this project's running + loading instances (label = project name) plus the new one
-    would exceed max_instances. A replacement whose old box is up may overlap it up to
+    """ADR 0007: refuse when this project's running + loading instances plus the new one would exceed
+    max_instances. An instance is this project's if its label equals the project name or its id is in the
+    project's state store (an adopted box keeps a foreign label until relabelled).
+    A replacement whose old box is up may overlap it up to
     max_instances_during_migration."""
     insts = ctx.provider.instances()
-    up = [i for i in insts if i.status in UP_STATUSES and i.label == ctx.cfg.project.name]
+    mine = ctx.store.state["instances"]
+    up = [i for i in insts if i.status in UP_STATUSES and (i.label == ctx.cfg.project.name or i.id in mine)]
     pol = ctx.policy
     limit = (
         pol["max_instances_during_migration"]
@@ -621,7 +624,7 @@ def check_cap(ctx: Ctx, overlap_with: str | None = None) -> list[Instance]:
         else pol["max_instances"]
     )
     if len(up) + 1 > limit:
-        names = ", ".join(f"{i.id} ({i.status})" for i in up)
+        names = ", ".join(f"{i.id} (label {i.label or '-'}, {i.status})" for i in up)
         raise RentRefused(
             f"instance cap: {len(up)} instance(s) of this project already up: {names}; limit {limit} "
             "(max_instances). Destroy or stop one (`create --allow-second` overrides it for a manual rent)",

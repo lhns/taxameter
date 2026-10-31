@@ -178,12 +178,21 @@ def test_unknown_table_and_key_errors(tmp_path, capsys):
 
 def test_max_box_hours_is_required_in_policy(tmp_path, capsys):
     for text in ("", "[policy]\nidle_stop_min = 5\n"):
-        path = write_toml(tmp_path / "taxameter.toml", text)
+        path = write_toml(tmp_path / "taxameter.toml", '[project]\nname = "p"\n' + text)
         with pytest.raises(ConfigError, match=r"\[policy\] max_box_hours is required"):
             config.load(path)
         assert cli.main(["--config", str(path), "balance"]) == 1
         assert "max_box_hours is required" in capsys.readouterr().out
     assert config.load(project(tmp_path)).policy["max_box_hours"] == 3
+
+
+def test_project_name_is_required_and_non_empty(tmp_path, capsys):
+    for text in ("", '[project]\nname = ""\n', '[project]\nname = "  "\n', '[project]\nremote_dir = "/x"\n'):
+        path = write_toml(tmp_path / "taxameter.toml", text + "[policy]\nmax_box_hours = 3\n")
+        with pytest.raises(ConfigError, match=r"\[project\] name is required"):
+            config.load(path)
+        assert cli.main(["--config", str(path), "balance"]) == 1
+        assert "[project] name is required" in capsys.readouterr().out
 
 
 def test_min_cuda_in_offers_overrides_the_image_tag(tmp_path):
@@ -193,6 +202,8 @@ def test_min_cuda_in_offers_overrides_the_image_tag(tmp_path):
 
 
 def test_unknown_provider_is_a_clear_error(tmp_path, capsys):
-    path = write_toml(tmp_path / "taxameter.toml", '[provider]\nname = "lambda"\n[policy]\nmax_box_hours = 3\n')
+    path = write_toml(
+        tmp_path / "taxameter.toml", '[project]\nname = "p"\n[provider]\nname = "lambda"\n[policy]\nmax_box_hours = 3\n'
+    )
     assert cli.main(["--config", str(path), "balance"]) == 1
     assert "unknown provider 'lambda'" in capsys.readouterr().out

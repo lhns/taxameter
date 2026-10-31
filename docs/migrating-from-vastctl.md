@@ -26,7 +26,7 @@ Map the constants at the top of your `vastctl.py` and your `.vast/config.json`:
 
 | vastctl | taxameter.toml |
 |---|---|
-| `LABEL`, `REMOTE_DIR` | `[project] name`, `remote_dir` |
+| `LABEL`, `REMOTE_DIR` | `[project] name` (required, non-empty, unique per project: it is the label the cap counts), `remote_dir` |
 | `.vast/` | `[project] state_dir = ".vast"` (keeps state, blocklist, last-good host, fetch archives) |
 | `SSH_KEY` | `[project] ssh_key` |
 | `GPU_CLASS`, offer flags | `[offers] gpus`, `min_vram_gb`, `min_reliability`, ... (`min_cuda` defaults to the image's CUDA version, else 12.8; set it explicitly to pin it) |

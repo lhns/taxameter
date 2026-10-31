@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 
 import pytest
 from conftest import R, make_instance, manage, offer, tick
@@ -384,3 +385,31 @@ def test_watchdog_replacement_refuses_when_an_unmanaged_box_of_this_project_is_u
     assert not fake.calls("PUT", "/asks/")
     assert any(p["key"] == "replace" and "200" in p["msg"] for p in ctx.store.state["pending"])
     assert R(ctx)["role"] == "active"
+
+
+# ------------------------------------------------------------------------------------------------ adopted boxes count
+@pytest.mark.parametrize("label", ["other-project", ""])
+def test_adopted_box_with_foreign_label_blocks_create_and_nightly(env, nightly_env, label, capsys):
+    ctx, fake, shell, order = nightly_env
+    unmanaged(fake, label=label)
+    ctx.store.rec("200", create=True)  # adopted: in the state store, label not (yet) the project name
+    assert cli.main(["create", "--auto"], ctx) == 1
+    assert not fake.calls("PUT", "/asks/")
+    out = capsys.readouterr().out
+    assert f"200 (label {label or '-'}, running)" in out
+    assert run_nightly(ctx) == 1
+    assert not fake.calls("PUT", "/asks/") and order == []
+
+
+# ------------------------------------------------------------------------------------------------ adopt relabels
+def test_adopt_relabels_only_when_the_label_differs(env, capsys):
+    ctx, fake, _ = env
+    unmanaged(fake, label="other-project")
+    unmanaged(fake, iid=201, label="proj")
+    assert cli.main(["adopt", "200"], ctx) == 0
+    assert "relabelled" in capsys.readouterr().out
+    puts = [json.loads(r[2]) for r in fake.calls("PUT", "/instances/200/")]
+    assert puts == [{"label": "proj"}] and fake.instances[200]["label"] == "proj"
+    assert ctx.store.rec("200")["label"] == "proj"
+    assert cli.main(["adopt", "201"], ctx) == 0
+    assert not fake.calls("PUT", "/instances/201/")
