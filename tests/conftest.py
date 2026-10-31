@@ -35,13 +35,16 @@ def make_instance(iid=100, status="running", port=41022, host_id=555, runtype="s
     }  # fmt: skip
 
 
-def offer(oid, host, price, score, rel=0.995, verified=None, verification="verified", ports=10, vram=24564):
-    return {
+def offer(oid, host, price, score, rel=0.995, verified=None, verification="verified", ports=10, vram=24564, ram=None):
+    row = {
         "id": oid, "host_id": host, "machine_id": host + 1, "gpu_name": "RTX 3090", "gpu_ram": vram,
         "dph_total": price, "dlperf_per_dphtotal": score, "reliability2": rel, "verified": verified,
         "verification": verification, "direct_port_count": ports, "geolocation": "X", "inet_down": 900,
         "cuda_max_good": 12.8,
     }  # fmt: skip
+    if ram is not None:
+        row["cpu_ram"] = ram  # MB, as Vast reports it
+    return row
 
 
 class FakeVast:
@@ -231,6 +234,11 @@ def make_cfg(root: Path, key: Path) -> Config:
     cfg.models.from_key = "model.*.hf"
     cfg.policy["max_box_hours"] = 3
     return cfg
+
+
+@pytest.fixture(autouse=True)
+def _rent_lock_in_tmp(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))  # never lock in the real ~/.config
 
 
 @pytest.fixture(autouse=True)

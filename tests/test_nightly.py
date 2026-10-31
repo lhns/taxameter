@@ -413,3 +413,99 @@ def test_adopt_relabels_only_when_the_label_differs(env, capsys):
     assert ctx.store.rec("200")["label"] == "proj"
     assert cli.main(["adopt", "201"], ctx) == 0
     assert not fake.calls("PUT", "/instances/201/")
+
+
+# ------------------------------------------------------------------------------------------------ account price ceiling
+def test_account_ceiling_counts_boxes_of_any_label(env, capsys):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 10, 0.2, 400)]
+    unmanaged(fake, label="other-project")  # 0.4 USD/h, another project: not in the count cap, but in the price sum
+    ctx.policy["max_account_price_per_hour"] = 0.5
+    assert cli.main(["create", "--auto"], ctx) == 1
+    assert not fake.calls("PUT", "/asks/")
+    out = capsys.readouterr().out
+    assert "max_account_price_per_hour" in out and "200 (label other-project, $0.400/h, running)" in out
+    ctx.policy["max_account_price_per_hour"] = 0.6
+    assert cli.main(["create", "--auto"], ctx) == 0
+    assert fake.calls("PUT", "/asks/1/")
+
+
+def test_account_ceiling_ignores_stopped_boxes(env):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 10, 0.2, 400)]
+    unmanaged(fake, status="exited", label="other-project")
+    ctx.policy["max_account_price_per_hour"] = 0.25
+    assert cli.main(["create", "--auto"], ctx) == 0
+
+
+def test_account_ceiling_is_off_by_default(env):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 10, 9.0, 400)]
+    unmanaged(fake, label="other-project")
+    assert ctx.policy["max_account_price_per_hour"] is None
+    assert cli.main(["create", "--auto", "--max-price", "10"], ctx) == 0
+
+
+def test_account_ceiling_falls_through_to_a_cheaper_offer(env):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 10, 0.45, 900), offer(2, 11, 0.2, 400)]  # ranked by score: the dear one first
+    unmanaged(fake, label="other-project")
+    ctx.policy["max_account_price_per_hour"] = 0.65
+    assert cli.main(["create", "--auto"], ctx) == 0
+    assert not fake.calls("PUT", "/asks/1/") and fake.calls("PUT", "/asks/2/")
+
+
+def test_account_ceiling_is_not_skipped_by_allow_second(env):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 10, 0.2, 400)]
+    unmanaged(fake)
+    ctx.policy["max_account_price_per_hour"] = 0.5
+    assert cli.main(["create", "--auto", "--allow-second"], ctx) == 1
+    assert not fake.calls("PUT", "/asks/")
+
+
+def test_account_ceiling_applies_to_nightly(nightly_env):
+    ctx, fake, shell, order = nightly_env
+    unmanaged(fake, label="other-project")
+    ctx.policy["max_account_price_per_hour"] = 0.5
+    assert run_nightly(ctx) == 1
+    assert not fake.calls("PUT", "/asks/") and order == []
+
+
+# ------------------------------------------------------------------------------------------------ rent lock
+def test_rent_waits_for_the_machine_wide_lock_then_refuses(env):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 10, 0.2, 400)]
+    held = vc.FileLock(vc.rent_lock_path())
+    assert held.acquire()
+    try:
+        assert cli.main(["create", "--auto"], ctx) == 1
+        assert not fake.calls("PUT", "/asks/")
+    finally:
+        held.release()
+    assert cli.main(["create", "--auto"], ctx) == 0
+
+
+def test_rent_releases_the_lock_after_create(env):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 10, 0.2, 400)]
+    assert cli.main(["create", "--auto"], ctx) == 0
+    probe = vc.FileLock(vc.rent_lock_path())
+    assert probe.acquire()
+    probe.release()
+
+
+# ------------------------------------------------------------------------------------------------ offer RAM filter
+def test_max_ram_gb_drops_offers_with_more_or_unknown_ram(env):
+    ctx, fake, _ = env
+    fake.offers = [
+        offer(1, 10, 0.2, 900, ram=128 * 1024),
+        offer(2, 11, 0.3, 400, ram=32 * 1024),
+        offer(3, 12, 0.25, 500),
+    ]
+    ctx.cfg.offers.max_ram_gb = 64
+    ids = [o.id for o in vc.search_offers(ctx)]
+    assert ids == ["2"]
+    assert vc.search_offers(ctx)[0].ram_gb == 32
+    ctx.cfg.offers.max_ram_gb = 0
+    assert sorted(o.id for o in vc.search_offers(ctx)) == ["1", "2", "3"]

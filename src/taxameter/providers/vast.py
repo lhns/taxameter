@@ -206,6 +206,7 @@ def offer_from_row(o: dict) -> Offer:
         reliability=float(o.get("reliability2") or o.get("reliability") or 0),
         location=str(o.get("geolocation") or "?"),
         raw=o,
+        ram_gb=float(o.get("cpu_ram") or 0) / 1024,  # MB
     )
 
 

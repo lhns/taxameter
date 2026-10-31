@@ -49,6 +49,7 @@ class Offer:
     reliability: float
     location: str
     raw: dict[str, Any] = field(default_factory=dict)
+    ram_gb: float = 0.0  # host RAM; 0 when the provider does not report it
     price_rank: int = 0  # set by the core's ranking
 
 

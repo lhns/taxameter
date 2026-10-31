@@ -501,6 +501,7 @@ def filter_rank_offers(
     max_price: float | None = None,
     sort: str = "score",
     prefer_host: str | None = None,
+    max_ram_gb: float = 0,
 ) -> list[Offer]:
     """Drop blocklisted hosts and over-price offers; rank by throughput per dollar (or by price), then move
     offers of `prefer_host` (the last host that delivered a verified run) to the front. The blocklist always wins.
@@ -510,6 +511,8 @@ def filter_rank_offers(
         if o.host_id is not None and str(o.host_id) in blocklist:
             continue
         if max_price is not None and (o.price_per_h or 1e9) > max_price:
+            continue
+        if max_ram_gb and (o.ram_gb or 1e9) > max_ram_gb:  # unknown RAM cannot be shown to fit
             continue
         keep.append(o)
     by_price = sorted(keep, key=lambda o: o.price_per_h or 1e9)
@@ -551,6 +554,7 @@ def search_offers(
         mp,
         g("sort", "score"),
         prefer_host=ctx.store.state.get("last_good_host"),
+        max_ram_gb=float(g("max_ram", off.max_ram_gb)),
     )
 
 
@@ -633,7 +637,45 @@ def check_cap(ctx: Ctx, overlap_with: str | None = None) -> list[Instance]:
     return insts
 
 
-def rent(
+RENT_LOCK_WAIT_S = 60
+
+
+def rent_lock_path() -> Path:
+    """One lock per machine and user, outside every project, so two local projects rent one at a time."""
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base) if base else Path.home() / ".config") / "taxameter" / "rent.lock"
+
+
+def rent(ctx: Ctx, search: Callable[[], list[Offer]], **kw: Any) -> tuple[str, Offer]:
+    """Serialise rents on this machine (ADR 0008): the lock is held from the cap checks until the create call
+    returns, so two local projects cannot both pass the account price check against the same running boxes."""
+    lock = FileLock(rent_lock_path())
+    for _ in range(RENT_LOCK_WAIT_S):
+        if lock.acquire():
+            break
+        ctx.sleep(1)
+    else:
+        raise RentRefused(f"another rent on this machine holds {lock.path} for over {RENT_LOCK_WAIT_S} s; try again")
+    try:
+        return _rent(ctx, search, **kw)
+    finally:
+        lock.release()
+
+
+def check_account_price(offer: Offer, up: list[Instance], ceiling: float) -> str | None:
+    """ADR 0008: a refusal message when the account's running + loading boxes (any label) plus `offer` would cost
+    more than `ceiling` USD/h, else None."""
+    total = sum(i.price_per_h for i in up)
+    if total + offer.price_per_h <= ceiling + 1e-9:
+        return None
+    boxes = ", ".join(f"{i.id} (label {i.label or '-'}, ${i.price_per_h:.3f}/h, {i.status})" for i in up)
+    return (
+        f"account price ceiling: offer {offer.id} at ${offer.price_per_h:.3f}/h on top of ${total:.3f}/h already "
+        f"running [{boxes or 'none'}] exceeds max_account_price_per_hour ${ceiling:.3f}"
+    )
+
+
+def _rent(
     ctx: Ctx,
     search: Callable[[], list[Offer]],
     *,
@@ -648,9 +690,10 @@ def rent(
     max_price: float | None = None,
     announce: str = "renting ",
 ) -> tuple[str, Offer]:
-    """The one place that rents. (1) Account-wide cap. (2) Try the ranked offers in order, at most rent_attempts:
-    per offer the runway check, then create. OfferGone (taken meanwhile) moves on to the next offer; any other
-    error propagates at once, because a timeout may already have created a billed box."""
+    """The one place that rents (under the rent lock). (1) Per-project cap. (2) Try the ranked offers in order, at
+    most rent_attempts: per offer the account price ceiling and the runway check, then create. OfferGone (taken
+    meanwhile) moves on to the next offer; any other error propagates at once, because a timeout may already have
+    created a billed box."""
     st, pol = ctx.store, ctx.policy
     if interruptible is None:  # same default as the offer query, so a bid offer is never rented on-demand
         interruptible = ctx.cfg.offers.interruptible
@@ -664,8 +707,16 @@ def rent(
             )
     elif not offers:
         raise RentRefused(f"no offers match under ${max_price}/h" if max_price is not None else "no offers match")
+    ceiling = pol.get("max_account_price_per_hour")  # not skipped by allow_second: it is a money cap
+    acct_up = [i for i in (insts or ctx.provider.instances()) if i.status in UP_STATUSES] if ceiling is not None else []
     tried: list[str] = []
+    over: list[str] = []
     for offer in offers[: int(pol["rent_attempts"])]:
+        if ceiling is not None:
+            why = check_account_price(offer, acct_up, float(ceiling))
+            if why:
+                over.append(why)
+                continue
         if check_runway:
             bal = spend_summary(ctx.provider.credit(), insts or ctx.provider.instances())
             runway = runway_after(bal, offer.price_per_h)
@@ -680,6 +731,9 @@ def rent(
         except OfferGone as e:
             tried.append(offer.id)
             st.event(f"offer {offer.id} (host {offer.host_id}) was taken meanwhile: {e}")
+    if over:
+        gone = f"; {len(tried)} other offer(s) were gone" if tried else ""
+        raise RentRefused(" | ".join(over) + gone)
     raise RentRefused(f"all {len(tried)} offer(s) tried were gone: {', '.join(tried)}")
 
 

@@ -36,10 +36,14 @@ tag = "cuda-12.8.1-auto"
 [offers]
 min_cuda = 12.8            # optional: lowest host-driver CUDA to accept; default: the CUDA version in the image
                            # name/tag (cuda-12.8.1 -> 12.8), else 12.8
+max_ram_gb = 64            # optional: drop offers whose host RAM exceeds this (or is unknown), e.g. so a model
+                           # does not fit in page cache for benchmarks; default: no limit
 
 [policy]
 max_box_hours = 12         # required, no default: a managed box running longer is stopped
 max_instances = 1          # this project's boxes up at once (default 1)
+max_account_price_per_hour = 0.9  # optional: running + loading boxes on the whole account (any label) plus the new
+                           # one may not cost more USD/h; default: off. Rents on one machine take a lock
 ```
 
 `[policy]` holds the cap and watchdog thresholds (defaults in `config.py`). `[project] name` and `[policy] max_box_hours` are required.
@@ -84,7 +88,7 @@ Decisions are in [docs/adr](docs/adr). In short:
 - **Provider interface** (ADR 0002). Ten methods: `offers`, `create`, `instance`, `instances`, `start`, `stop`, `set_label`, `reboot`, `destroy`, `credit`, returning normalised `Offer`, `Instance` and `Endpoint`. `OfferGone` makes renting fall through to the next offer (at most 3); any other create error aborts.
 - **SkyPilot** (ADR 0003). Evaluated; the seam allows a backend later, but it is not built: it brings a second state store and its own lifecycle, and lacks USD/h caps and a host blocklist.
 - **Per-project config** (ADR 0004). `taxameter.toml` holds image, pushed paths, box patterns, results, models, nightly script and policy. The box scripts are generic and read a rendered env file in `/root/.taxameter/`; projects plug in `provision_hook` and `verify_hook` scripts.
-- **Per-project instance cap** (ADR 0007, supersedes the account-wide cap of 0005). Instances labelled with the project name, and instances adopted into the project (`adopt` relabels them), count; there is no cross-project cap, so total spend across projects is bounded only by each project's caps.
+- **Per-project instance cap** (ADR 0007, supersedes the account-wide count cap of 0005; ADR 0008 adds an optional account-wide USD/h ceiling and a per-machine rent lock). Instances labelled with the project name, and instances adopted into the project (`adopt` relabels them), count; there is no cross-project cap, so total spend across projects is bounded only by each project's caps.
 - **Migration** (ADR 0006, [docs/migrating-from-vastctl.md](docs/migrating-from-vastctl.md)). Keep `state_dir = ".vast"`, replace `scripts/vastctl.py` by a shim.
 
 Layout:
