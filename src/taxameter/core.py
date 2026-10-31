@@ -554,7 +554,7 @@ def search_offers(
         mp,
         g("sort", "score"),
         prefer_host=ctx.store.state.get("last_good_host"),
-        max_ram_gb=float(g("max_ram", off.max_ram_gb)),
+        max_ram_gb=off.max_ram_gb,
     )
 
 
@@ -615,9 +615,8 @@ class RentRefused(ProviderError):
 def check_cap(ctx: Ctx, overlap_with: str | None = None) -> list[Instance]:
     """ADR 0007: refuse when this project's running + loading instances plus the new one would exceed
     max_instances. An instance is this project's if its label equals the project name or its id is in the
-    project's state store (an adopted box keeps a foreign label until relabelled).
-    A replacement whose old box is up may overlap it up to
-    max_instances_during_migration."""
+    project's state store (an adopted box keeps a foreign label until relabelled). A replacement whose old box is
+    up may overlap it up to max_instances_during_migration."""
     insts = ctx.provider.instances()
     mine = ctx.store.state["instances"]
     up = [i for i in insts if i.status in UP_STATUSES and (i.label == ctx.cfg.project.name or i.id in mine)]
