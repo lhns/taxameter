@@ -1,4 +1,4 @@
-"""nightly orchestration, the rent helper (offer fall-through, account-wide cap) and the nightly lock."""
+"""nightly orchestration, the rent helper (offer fall-through, per-project cap) and the nightly lock."""
 
 from __future__ import annotations
 
@@ -292,19 +292,19 @@ def test_nightly_three_gone_offers_is_an_error(nightly_env):
     assert len(asks(fake)) == 3 and not ctx.store.state["instances"] and order == []
 
 
-# ------------------------------------------------------------------------------------------------ account-wide cap
-def unmanaged(fake, iid=200, status="running", label="other-project"):
+# ------------------------------------------------------------------------------------------------ per-project cap
+def unmanaged(fake, iid=200, status="running", label="proj"):  # "proj" is the test project's label
     fake.instances[iid] = make_instance(iid, status=status, label=label)
 
 
-def test_create_refuses_when_another_project_has_a_box_up(env, capsys):
+def test_create_refuses_when_an_unmanaged_box_of_this_project_is_up(env, capsys):
     ctx, fake, _ = env
     fake.offers = [offer(1, 10, 0.2, 400)]
     unmanaged(fake)
     assert cli.main(["create", "--auto"], ctx) == 1
     assert not fake.calls("PUT", "/asks/")
     out = capsys.readouterr().out
-    assert "200" in out and "other-project" in out and "instance cap" in out  # names the blocking box
+    assert "200" in out and "instance cap" in out  # names the blocking box
 
 
 def test_create_allow_second_overrides_the_cap(env):
@@ -313,6 +313,31 @@ def test_create_allow_second_overrides_the_cap(env):
     unmanaged(fake)
     assert cli.main(["create", "--auto", "--allow-second"], ctx) == 0
     assert fake.calls("PUT", "/asks/1/")
+
+
+def test_boxes_of_other_projects_do_not_count(env):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 10, 0.2, 400)]
+    unmanaged(fake, label="other-project")
+    unmanaged(fake, iid=201, label="")
+    assert cli.main(["create", "--auto"], ctx) == 0
+    assert fake.calls("PUT", "/asks/1/")
+
+
+def test_nightly_ignores_boxes_of_other_projects(nightly_env):
+    ctx, fake, shell, order = nightly_env
+    unmanaged(fake, label="other-project")
+    assert run_nightly(ctx) == 0
+
+
+def test_replacement_overlap_counts_only_this_projects_boxes(env):
+    ctx, fake, _ = env
+    manage(ctx, fake)  # the old box, up
+    unmanaged(fake, label="other-project")
+    vc.check_cap(ctx, overlap_with="100")  # old + new = 2 <= max_instances_during_migration
+    unmanaged(fake, iid=201)  # a second box of this project: 3 > 2
+    with pytest.raises(vc.RentRefused):
+        vc.check_cap(ctx, overlap_with="100")
 
 
 @pytest.mark.parametrize("status,blocks", [("running", True), ("created", True), ("exited", False)])
@@ -332,7 +357,7 @@ def test_cap_follows_max_instances(env):
     assert cli.main(["create", "--auto"], ctx) == 0
 
 
-def test_nightly_refuses_when_another_project_has_a_box_up(nightly_env):
+def test_nightly_refuses_when_an_unmanaged_box_of_this_project_is_up(nightly_env):
     ctx, fake, shell, order = nightly_env
     unmanaged(fake)
     assert run_nightly(ctx) == 1
@@ -346,7 +371,7 @@ def test_nightly_refuses_second_managed_box(nightly_env):
     assert not fake.calls("PUT", "/asks/") and order == []
 
 
-def test_watchdog_replacement_refuses_when_another_project_has_a_box_up(env):
+def test_watchdog_replacement_refuses_when_an_unmanaged_box_of_this_project_is_up(env):
     ctx, fake, _ = env
     ctx.cfg.policy["auto_replace"] = True
     ctx.policy = ctx.load_policy()

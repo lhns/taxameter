@@ -2,7 +2,7 @@
 
 A taxi meter for rented GPU boxes: you pay per minute while the box runs, and taxameter watches the meter.
 
-Taxameter rents a GPU box, pushes your committed code, runs a job detached, waits on the box, fetches the results with a DONE-marker check and destroys the box. Around that it enforces hard money caps (USD/h, instances on the account, hours per box), runs a watchdog for idle, stuck and unreachable boxes, keeps a host blocklist and redacts the API key from every line it prints. Vast.ai is the first provider.
+Taxameter rents a GPU box, pushes your committed code, runs a job detached, waits on the box, fetches the results with a DONE-marker check and destroys the box. Around that it enforces hard money caps (USD/h, instances per project, hours per box), runs a watchdog for idle, stuck and unreachable boxes, keeps a host blocklist and redacts the API key from every line it prints. Vast.ai is the first provider.
 
 ## Install
 
@@ -20,6 +20,29 @@ taxameter = { git = "https://github.com/lhns/taxameter", tag = "v0.1.0" }
 Then `uv run taxameter --help`. One-off use without a project dependency: `uvx --from git+https://github.com/lhns/taxameter taxameter --help`.
 
 Needs `ssh`, `scp` and `git` on PATH (Git for Windows on Windows), the provider API key in a file (Vast: `~/.config/vastai/vast_api_key`) and an SSH key registered with the provider.
+
+## Configuration
+
+Minimal `taxameter.toml` (all tables are in [ADR 0004](docs/adr/0004-project-config-and-box-contract.md); unknown keys are an error):
+
+```toml
+[project]
+name = "myproj"            # instance label; the instance cap counts only boxes with this label
+
+[image]
+name = "vastai/pytorch"
+tag = "cuda-12.8.1-auto"
+
+[offers]
+min_cuda = 12.8            # optional: lowest host-driver CUDA to accept; default: the CUDA version in the image
+                           # name/tag (cuda-12.8.1 -> 12.8), else 12.8
+
+[policy]
+max_box_hours = 12         # required, no default: a managed box running longer is stopped
+max_instances = 1          # this project's boxes up at once (default 1)
+```
+
+`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`); `max_box_hours` is the only required key.
 
 ## Usage
 
@@ -61,7 +84,7 @@ Decisions are in [docs/adr](docs/adr). In short:
 - **Provider interface** (ADR 0002). Nine methods: `offers`, `create`, `instance`, `instances`, `start`, `stop`, `reboot`, `destroy`, `credit`, returning normalised `Offer`, `Instance` and `Endpoint`. `OfferGone` makes renting fall through to the next offer (at most 3); any other create error aborts.
 - **SkyPilot** (ADR 0003). Evaluated; the seam allows a backend later, but it is not built: it brings a second state store and its own lifecycle, and lacks USD/h caps and a host blocklist.
 - **Per-project config** (ADR 0004). `taxameter.toml` holds image, pushed paths, box patterns, results, models, nightly script and policy. The box scripts are generic and read a rendered env file in `/root/.taxameter/`; projects plug in `provision_hook` and `verify_hook` scripts.
-- **Account-wide instance cap** (ADR 0005). Every rent counts all instances on the account, not just this project's.
+- **Per-project instance cap** (ADR 0007, supersedes the account-wide cap of 0005). Only instances labelled with the project name count; there is no cross-project cap, so total spend across projects is bounded only by each project's caps.
 - **Migration** (ADR 0006, [docs/migrating-from-vastctl.md](docs/migrating-from-vastctl.md)). Keep `state_dir = ".vast"`, replace `scripts/vastctl.py` by a shim.
 
 Layout:

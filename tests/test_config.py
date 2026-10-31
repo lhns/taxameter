@@ -77,17 +77,19 @@ def test_min_cuda_from_config_image_name_or_default(tmp_path):
 
 
 # ------------------------------------------------------------------------------------------------ policy precedence
-def project(tmp_path, extra=""):
+def project(tmp_path, policy="", extra=""):
+    """A minimal valid config; `policy` lines go under [policy] next to the required max_box_hours."""
     key = tmp_path / "k"
     key.write_text(KEY)
     return write_toml(
         tmp_path / "taxameter.toml",
-        f'[project]\nname = "p"\nstate_dir = ".st"\n[provider]\napi_key_file = "{key.as_posix()}"\n{extra}',
+        f'[project]\nname = "p"\nstate_dir = ".st"\n[provider]\napi_key_file = "{key.as_posix()}"\n{extra}'
+        f"[policy]\nmax_box_hours = 3\n{policy}",
     )
 
 
 def test_policy_precedence_defaults_then_toml_then_config_json(tmp_path):
-    path = project(tmp_path, "[policy]\nmax_price_per_hour = 0.3\nidle_stop_min = 5\n")
+    path = project(tmp_path, "max_price_per_hour = 0.3\nidle_stop_min = 5\n")
     cfg = config.load(path)
     assert vc.Ctx(cfg).policy["max_price_per_hour"] == 0.3  # [policy] beats the default 0.45
     assert vc.Ctx(cfg).policy["disk_gb"] == 50  # untouched default
@@ -105,7 +107,7 @@ def test_config_json_is_never_created(tmp_path):
 
 
 def test_invalid_config_json_warns_and_is_ignored(tmp_path, capsys):
-    cfg = config.load(project(tmp_path, "[policy]\nidle_stop_min = 7\n"))
+    cfg = config.load(project(tmp_path, "idle_stop_min = 7\n"))
     cfg.state_dir.mkdir()
     (cfg.state_dir / "config.json").write_text("{not json")
     ctx = vc.Ctx(cfg)
@@ -174,7 +176,23 @@ def test_unknown_table_and_key_errors(tmp_path, capsys):
         assert msg in capsys.readouterr().out
 
 
+def test_max_box_hours_is_required_in_policy(tmp_path, capsys):
+    for text in ("", "[policy]\nidle_stop_min = 5\n"):
+        path = write_toml(tmp_path / "taxameter.toml", text)
+        with pytest.raises(ConfigError, match=r"\[policy\] max_box_hours is required"):
+            config.load(path)
+        assert cli.main(["--config", str(path), "balance"]) == 1
+        assert "max_box_hours is required" in capsys.readouterr().out
+    assert config.load(project(tmp_path)).policy["max_box_hours"] == 3
+
+
+def test_min_cuda_in_offers_overrides_the_image_tag(tmp_path):
+    extra = '[image]\nname = "vastai/pytorch"\ntag = "cuda-12.8.1-auto"\n'
+    assert config.load(project(tmp_path, extra=extra)).min_cuda() == 12.8  # from the image tag
+    assert config.load(project(tmp_path, extra=extra + "[offers]\nmin_cuda = 12.4\n")).min_cuda() == 12.4
+
+
 def test_unknown_provider_is_a_clear_error(tmp_path, capsys):
-    path = write_toml(tmp_path / "taxameter.toml", '[provider]\nname = "lambda"\n')
+    path = write_toml(tmp_path / "taxameter.toml", '[provider]\nname = "lambda"\n[policy]\nmax_box_hours = 3\n')
     assert cli.main(["--config", str(path), "balance"]) == 1
     assert "unknown provider 'lambda'" in capsys.readouterr().out

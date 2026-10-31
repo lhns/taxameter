@@ -227,6 +227,7 @@ def make_cfg(root: Path, key: Path) -> Config:
     cfg.box.logs_dir = "runs/vast"
     cfg.models.from_toml = "bench/spec/phase0.toml"
     cfg.models.from_key = "model.*.hf"
+    cfg.policy["max_box_hours"] = 3
     return cfg
 
 

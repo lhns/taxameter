@@ -348,7 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "create":
             s.add_argument("--offer", help="offer id from `offers` (never falls through to another offer)")
             s.add_argument("--auto", action="store_true", help="best score within max price")
-            s.add_argument("--allow-second", action="store_true", help="skip the account-wide instance cap")
+            s.add_argument("--allow-second", action="store_true", help="skip the per-project instance cap")
             s.add_argument("--image", help="container image (default [image] in taxameter.toml)")
     s = sub.add_parser("adopt", parents=[common], help="manage an existing instance")
     s.add_argument("instance")
