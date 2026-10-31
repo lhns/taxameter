@@ -32,6 +32,7 @@ DEFAULT_POLICY: dict[str, Any] = {
     "runway_rent_min_h": 3,  # below: never rent
     "auto_replace": False,  # an automatic replacement could start a second paid box
     "max_price_per_hour": 0.45,
+    "max_account_price_per_hour": None,  # optional ceiling on the whole account's running + loading USD/h (ADR 0008)
     "max_instances": 1,  # instances of this project (label = project name) up at once (ADR 0007)
     "max_instances_during_migration": 2,  # make-before-break: old + replacement overlap while it is verified
     "salvage_every_h": 2,  # start a stopped old box this often to fetch its unfetched results
@@ -85,6 +86,7 @@ class Offers:
     min_inet_mbps: float = 500
     min_cuda: float = 0  # highest CUDA the host driver must support; 0: from the image name (cuda:12.8...), else 12.8
     interruptible: bool = False
+    max_ram_gb: float = 0  # drop offers whose host RAM exceeds this (or is unknown); 0: no limit
 
 
 @dataclass
