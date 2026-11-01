@@ -15,7 +15,7 @@ For a repo that carries its own copy of `scripts/vastctl.py`, `vast_box.sh`, `id
 dev = ["taxameter"]   # next to pytest etc.
 
 [tool.uv.sources]
-taxameter = { git = "https://github.com/lhns/taxameter", tag = "v0.2.0" }
+taxameter = { git = "https://github.com/lhns/taxameter", tag = "v0.2.1" }
 ```
 
 Then `uv lock`. Requires Python 3.11+.
