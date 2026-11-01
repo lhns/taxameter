@@ -66,12 +66,14 @@ $T watchdog --dry-run        # what the cost-control loop would do
 
 Run `watchdog --once` every few minutes from cron or Task Scheduler whenever a box may exist.
 
+Box age: `status`, `run`, `ssh -- cmd`, `provision`, `put`, `fetch` and `health` print `box age 2h41m of max 3h00m` (provider start time, else the time recorded by `create`/`adopt`) and warn past 80% of `max_box_hours`. `run` and `provision` refuse to start work on a box older than the cap unless you pass `--past-cap`; `fetch` and `destroy` are never blocked. The watchdog still stops such a box.
+
 ## Rules for agents
 
 Copy these into the project's AGENTS.md.
 
 - Never print, log, commit or pass the API key on a command line. Taxameter reads it from the file and sends it only as a header.
-- The box bills every running minute. Destroy it when done, after a verified fetch. Never raise the caps without asking.
+- The box bills every running minute. Destroy it when done, after a verified fetch. Never raise the caps without asking, and never use `--past-cap` unasked.
 - Commit before `provision` or `run`: only committed HEAD is pushed.
 - Long work runs detached on the box. `ssh` stops remote commands after 120 s unless `--timeout`. Wait with loops on the box, not local polling.
 - Launch scripts must be safe to run twice (`exec 8> /root/x.lock; flock -n 8 || exit 0`): a command is re-run after a dropped connection.

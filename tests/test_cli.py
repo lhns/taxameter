@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 from conftest import GONE_BODY, INSTANCE_KEY, KEY, manage, offer
+from conftest import make_instance as vc_make
 
 from taxameter import cli
 from taxameter import core as vc
@@ -246,3 +248,85 @@ def test_no_command_is_an_argparse_error(argv):
     with pytest.raises(SystemExit) as e:
         cli.main(argv)
     assert e.value.code == 2
+
+
+# ------------------------------------------------------------------------------------------------ box age cap
+def _aged(fake, hours, iid=100):
+    fake.instances[iid]["start_date"] = time.time() - hours * 3600
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["status"], ["ssh", "--", "echo", "up"], ["fetch"], ["health"], ["put", "{f}", "/root/x"], ["run", "s.sh"]],
+)
+def test_commands_print_box_age_without_warning_when_young(env, capsys, tmp_path, argv):
+    ctx, fake, _ = env
+    manage(ctx, fake)
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    _aged(fake, 1)
+    cli.main([a.replace("{f}", str(f)) for a in argv], ctx)
+    out = capsys.readouterr().out
+    assert "box age 1h00m of max 3h00m" in out and "WARNING: box age" not in out
+
+
+def test_provision_prints_age_and_warns_past_80_percent(env, capsys):
+    ctx, fake, _ = env
+    manage(ctx, fake)
+    _aged(fake, 2.7)
+    assert cli.main(["provision", "--models", "org/m:f.gguf"], ctx) == 0
+    out = capsys.readouterr().out
+    assert "box age 2h42m of max 3h00m" in out and "past 80% of max_box_hours 3h00m" in out
+
+
+@pytest.mark.parametrize("argv", [["run", "scripts/job.sh"], ["provision", "--models", "org/m:f.gguf"]])
+def test_new_work_refused_past_the_cap_unless_overridden(env, capsys, argv):
+    ctx, fake, shell = env
+    manage(ctx, fake)
+    _aged(fake, 3.63)
+    assert cli.main(argv, ctx) == 1
+    out = capsys.readouterr().out
+    assert "3h38m" in out and "max_box_hours 3h00m" in out and "--past-cap" in out
+    assert not [c for c in shell.ssh_cmds() if "box.sh run" in c or "provision" in c]
+    assert cli.main([*argv, "--past-cap"], ctx) == 0
+    assert "WARNING: box is past max_box_hours" in capsys.readouterr().out
+
+
+def test_fetch_ssh_and_destroy_are_never_blocked_past_the_cap(env, capsys):
+    ctx, fake, _ = env
+    rec = manage(ctx, fake)
+    rec["runs"] = {"bench/results": {"ok": False}}
+    _aged(fake, 4)
+    assert cli.main(["ssh", "--", "echo", "up"], ctx) == 0
+    assert cli.main(["fetch"], ctx) == 0
+    assert cli.main(["destroy", "--yes"], ctx) == 0
+    assert "WARNING: box is past max_box_hours" in capsys.readouterr().out
+
+
+def test_age_falls_back_to_recorded_creation_time(env, capsys):
+    ctx, fake, _ = env
+    rec = manage(ctx, fake)
+    fake.instances[100]["start_date"] = None  # provider gives no start time
+    rec["created"] = time.time() - 3.5 * 3600  # as recorded by create/adopt
+    assert cli.main(["run", "scripts/job.sh"], ctx) == 1
+    assert "3h30m" in capsys.readouterr().out
+
+
+def test_adopt_records_provider_start_time_and_age_is_known(env, capsys):
+    ctx, fake, _ = env
+    fake.instances[100] = vc_make(100)
+    _aged(fake, 3.2)
+    assert cli.main(["adopt", "100"], ctx) == 0
+    assert ctx.store.rec(100)["created"] == pytest.approx(fake.instances[100]["start_date"])
+    fake.fail = True  # API down: the recorded time still gives the age
+    capsys.readouterr()
+    vc.age_notice(ctx, "100")
+    assert "box age 3h12m" in capsys.readouterr().out
+
+
+def test_no_age_line_when_age_unknown(env, capsys):
+    ctx, fake, _ = env
+    manage(ctx, fake)
+    fake.instances[100]["start_date"] = None
+    assert cli.main(["run", "scripts/job.sh"], ctx) == 0
+    assert "box age" not in capsys.readouterr().out

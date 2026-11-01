@@ -278,6 +278,48 @@ class Ctx:
         return str(iid)
 
 
+# ----------------------------------------------------------------------------------------------- box age
+WARN_AGE_FRACTION = 0.8
+
+
+def fmt_hours(h: float) -> str:
+    m = int(round(h * 60))
+    return f"{m // 60}h{m % 60:02d}m"
+
+
+def box_age_h(ctx: Ctx, iid: str, inst: Instance | None = None) -> float | None:
+    """Hours since the provider's start time of the box, else the time recorded at create/adopt; None if unknown.
+    An API failure falls back to the record: a cost notice must never break the command."""
+    started = inst.started_at if inst else None
+    if started is None and inst is None:
+        try:
+            found = ctx.provider.instance(iid)
+            started = found.started_at if found else None
+        except ProviderError:
+            pass
+    if started is None:
+        started = ctx.store.state["instances"].get(str(iid), {}).get("created")
+    return (time.time() - float(started)) / 3600 if started else None
+
+
+def age_notice(ctx: Ctx, iid: str, inst: Instance | None = None, enforce: bool = False, past_cap: bool = False) -> None:
+    """Print the box age against max_box_hours (and a warning past 80%). With `enforce`, refuse new work on a box
+    older than the cap unless `past_cap`. Never used for fetch/destroy: they are how you stop paying."""
+    age, cap = box_age_h(ctx, iid, inst), float(ctx.policy["max_box_hours"])
+    if age is None:
+        return
+    say(f"box age {fmt_hours(age)} of max {fmt_hours(cap)}")
+    if age > cap:
+        if enforce and not past_cap:
+            raise ProviderError(
+                f"box {iid} is {fmt_hours(age)} old, past max_box_hours {fmt_hours(cap)}: not starting new work "
+                "(fetch and destroy still work; pass --past-cap to override)"
+            )
+        say(f"WARNING: box is past max_box_hours {fmt_hours(cap)}: fetch results and destroy it")
+    elif age > WARN_AGE_FRACTION * cap:
+        say(f"WARNING: box age is past 80% of max_box_hours {fmt_hours(cap)}: wrap up, fetch and destroy")
+
+
 # ----------------------------------------------------------------------------------------------- ssh / scp
 class Unreachable(RuntimeError):
     pass

@@ -118,6 +118,7 @@ def cmd_ssh(ctx: Ctx, a: argparse.Namespace) -> int:
     remote = Remote(ctx, iid)
     cmd = " ".join(a.cmd).strip()
     if cmd:
+        core.age_notice(ctx, iid)
         r = remote.run(cmd, timeout=a.timeout)
         if r.out:
             print(redact(r.out))
@@ -132,6 +133,7 @@ def cmd_ssh(ctx: Ctx, a: argparse.Namespace) -> int:
 def cmd_put(ctx: Ctx, a: argparse.Namespace) -> dict:
     """Copy local files to the box through ssh stdin (long `ssh -- "echo <base64> | ..."` lines failed silently)."""
     iid = ctx.iid(a.id)
+    core.age_notice(ctx, iid)
     remote = Remote(ctx, iid)
     out = {}
     for local in a.files:
@@ -154,6 +156,7 @@ def cmd_put(ctx: Ctx, a: argparse.Namespace) -> dict:
 
 def cmd_provision(ctx: Ctx, a: argparse.Namespace) -> dict:
     iid = ctx.iid(a.id)
+    core.age_notice(ctx, iid, enforce=True, past_cap=a.past_cap)
     models = core.parse_models(a.models) if a.models else core.configured_models(ctx.cfg)
     ok = core.provision(ctx, iid, models, a.wait_min)
     return {"id": iid, "ok": ok}
@@ -161,6 +164,7 @@ def cmd_provision(ctx: Ctx, a: argparse.Namespace) -> dict:
 
 def cmd_run(ctx: Ctx, a: argparse.Namespace) -> dict:
     iid = ctx.iid(a.id)
+    core.age_notice(ctx, iid, enforce=True, past_cap=a.past_cap)
     batch = {
         "script": a.script,
         "args": a.args,
@@ -174,12 +178,14 @@ def cmd_run(ctx: Ctx, a: argparse.Namespace) -> dict:
 
 def cmd_fetch(ctx: Ctx, a: argparse.Namespace) -> dict:
     iid = ctx.iid(a.id)
+    core.age_notice(ctx, iid)
     ok = core.fetch(ctx, iid, a.dirs or None, a.minutes)
     return {"id": iid, "ok": ok, "runs": ctx.store.rec(iid).get("runs")}
 
 
 def cmd_health(ctx: Ctx, a: argparse.Namespace) -> dict:
     iid = ctx.iid(a.id)
+    core.age_notice(ctx, iid)
     h = core.health_check(ctx, iid, heal_watchdog=not a.no_heal)
     say(core.health_line(h))
     rec = ctx.store.rec(iid)
@@ -241,6 +247,10 @@ def cmd_status(ctx: Ctx, a: argparse.Namespace) -> dict:
                 f"  host {i.host_id}  label {i.label}  "
                 f"{'managed:' + rec.get('role', '?') if rec else 'unmanaged'}"
             )
+        cur = st.state.get("current")
+        for i in insts:
+            if i.id == str(cur):
+                core.age_notice(ctx, i.id, i)
         res["instances"] = [
             {k: getattr(i, k) for k in ("id", "status", "gpu_name", "price_per_h", "host_id", "label")} for i in insts
         ]
@@ -321,6 +331,9 @@ def cmd_block(ctx: Ctx, a: argparse.Namespace) -> dict:
 
 
 # ----------------------------------------------------------------------------------------------- CLI
+PAST_CAP_HELP = "start work on a box older than max_box_hours (default: refused)"
+
+
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     # SUPPRESS: the options work before or after the subcommand without the subparser resetting them
@@ -368,10 +381,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("provision", parents=[common], help="push HEAD, run the provision hook, models, watchdog")
     s.add_argument("--models", default="", help="comma list of org/name:file (default: [models] of the config)")
     s.add_argument("--wait-min", type=float)
+    s.add_argument("--past-cap", action="store_true", help=PAST_CAP_HELP)
     s = sub.add_parser("run", parents=[common], help="push HEAD + start a script detached on the box")
     s.add_argument("script", help="repo-relative script")
     s.add_argument("args", nargs="*")
     s.add_argument("--env", action="append", metavar="K=V", help="env for the script, on top of [box] run_env")
+    s.add_argument("--past-cap", action="store_true", help=PAST_CAP_HELP)
     s = sub.add_parser(
         "nightly", parents=[common], help="create, provision, run the nightly script, wait, fetch, destroy"
     )
