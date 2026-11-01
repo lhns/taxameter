@@ -14,7 +14,7 @@ Add it to the project as a uv dependency and commit a `taxameter.toml` at the re
 dev = ["taxameter"]
 
 [tool.uv.sources]
-taxameter = { git = "https://github.com/lhns/taxameter", tag = "v0.1.0" }
+taxameter = { git = "https://github.com/lhns/taxameter", tag = "v0.2.0" }
 ```
 
 Then `uv run taxameter --help`. One-off use without a project dependency: `uvx --from git+https://github.com/lhns/taxameter taxameter --help`.
