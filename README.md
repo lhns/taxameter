@@ -14,7 +14,7 @@ Add it to the project as a uv dependency and commit a `taxameter.toml` at the re
 dev = ["taxameter"]
 
 [tool.uv.sources]
-taxameter = { git = "https://github.com/lhns/taxameter", tag = "v0.2.2" }
+taxameter = { git = "https://github.com/lhns/taxameter", tag = "v0.3.0" }
 ```
 
 Then `uv run taxameter --help`. One-off use without a project dependency: `uvx --from git+https://github.com/lhns/taxameter taxameter --help`.
@@ -64,6 +64,8 @@ $T nightly                   # all of the above: create, provision, run, wait, f
 $T watchdog --dry-run        # what the cost-control loop would do
 ```
 
+Several boxes at once (`max_instances` above 1, ADR 0009): each agent drives its own box with its own process. Always pass `--id` (`$T run --id 123 ...`); without it a command uses the default `current` box, which `create` and `adopt` set only when none is set. `create` prints the new id (`--json` has `id` and `current`). State updates are locked, so parallel processes do not lose each other's changes; batches are tracked per box. `status` and `watchdog` cover all of the project's boxes.
+
 Run `watchdog --once` every few minutes from cron or Task Scheduler whenever a box may exist.
 
 Box age: `status`, `run`, `ssh -- cmd`, `provision`, `put`, `fetch` and `health` print `box age 2h41m of max 3h00m` (provider start time, else the time recorded by `create`/`adopt`) and warn past 80% of `max_box_hours`. `run` and `provision` refuse to start work on a box older than the cap unless you pass `--past-cap`; `fetch` and `destroy` are never blocked. The watchdog still stops such a box.
@@ -91,6 +93,7 @@ Decisions are in [docs/adr](docs/adr). In short:
 - **SkyPilot** (ADR 0003). Evaluated; the seam allows a backend later, but it is not built: it brings a second state store and its own lifecycle, and lacks USD/h caps and a host blocklist.
 - **Per-project config** (ADR 0004). `taxameter.toml` holds image, pushed paths, box patterns, results, models, nightly script and policy. The box scripts are generic and read a rendered env file in `/root/.taxameter/`; projects plug in `provision_hook` and `verify_hook` scripts.
 - **Per-project instance cap** (ADR 0007, supersedes the account-wide count cap of 0005; ADR 0008 adds an optional account-wide USD/h ceiling and a per-machine rent lock). Instances labelled with the project name, and instances adopted into the project (`adopt` relabels them), count. Across projects, total spend is bounded by each project's caps plus `max_account_price_per_hour` when set.
+- **Parallel instances** (ADR 0009). State changes are locked read-modify-writes (`state.lock`), batches and replacement requests are per box, `current` is only the default; always pass `--id` with several boxes.
 - **Migration** (ADR 0006, [docs/migrating-from-vastctl.md](docs/migrating-from-vastctl.md)). Keep `state_dir = ".vast"`, replace `scripts/vastctl.py` by a shim.
 
 Layout:
@@ -107,7 +110,7 @@ src/taxameter/
   box/                box.sh, idle_autostop.sh, cuda_env.sh, pack_results.sh (run on the box)
 ```
 
-State (`<state_dir>/`, git-ignored): `state.json` (managed instances, endpoint cache, blocklist, runs, outages, batch), `events.log`, `nightly.lock`, `known_hosts_<id>`, `fetch/` (every fetched archive), optional `config.json` (local policy overrides).
+State (`<state_dir>/`, git-ignored): `state.json` (managed instances, endpoint cache, blocklist, runs, outages, batches per box), `events.log`, `state.lock`, `nightly.lock`, `known_hosts_<id>`, `fetch/` (every fetched archive), optional `config.json` (local policy overrides).
 
 ## Development
 

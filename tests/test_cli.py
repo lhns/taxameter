@@ -6,7 +6,7 @@ import json
 import time
 
 import pytest
-from conftest import GONE_BODY, INSTANCE_KEY, KEY, manage, offer
+from conftest import GONE_BODY, INSTANCE_KEY, KEY, manage, offer, persist
 from conftest import make_instance as vc_make
 
 from taxameter import cli
@@ -58,6 +58,7 @@ def test_destroy_refused_without_fetch(env, capsys):
     ctx, fake, _ = env
     rec = manage(ctx, fake)
     rec["runs"] = {"bench/results": {"ok": False}}
+    persist(ctx)
     assert cli.main(["destroy"], ctx) == 1  # no --yes
     assert cli.main(["destroy", "--yes"], ctx) == 1  # runs not fetched
     assert not fake.calls("DELETE")
@@ -116,7 +117,10 @@ def test_run_env_and_box_run_env_reach_the_box_command_line(env):
     assert cli.main(["run", "scripts/job.sh", "arg1", "--env", "OVERRIDE=cli", "--env", "MSG=two words"], ctx) == 0
     cmd = next(c for c in shell.ssh_cmds() if "box.sh run" in c)
     assert cmd == "BASE=1 OVERRIDE=cli MSG='two words' bash /root/.taxameter/box.sh run scripts/job.sh arg1"
-    assert ctx.store.state["batch"]["env"] == {"OVERRIDE": "cli", "MSG": "two words"}  # replacement reuses the CLI env
+    assert ctx.store.state["batches"]["100"]["env"] == {
+        "OVERRIDE": "cli",
+        "MSG": "two words",
+    }  # replacement reuses the CLI env
 
 
 def test_run_without_env_uses_only_config_env(env):

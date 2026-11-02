@@ -69,7 +69,7 @@ def cmd_create(ctx: Ctx, a: argparse.Namespace) -> dict:
         max_price=max_price,
     )
     ep = core.wait_ready(ctx, iid, ctx.policy["create_wait_min"])
-    return {"id": iid, "endpoint": str(ep) if ep else None}
+    return {"id": iid, "endpoint": str(ep) if ep else None, "current": ctx.store.state.get("current")}
 
 
 def cmd_nightly(ctx: Ctx, a: argparse.Namespace) -> dict:
@@ -84,11 +84,13 @@ def cmd_adopt(ctx: Ctx, a: argparse.Namespace) -> dict:
     if inst.label != name:
         ctx.provider.set_label(a.instance, name)
         say(f"relabelled instance {a.instance}: {inst.label or '-'} -> {name}")
-    rec = ctx.store.rec(a.instance, create=True)
-    rec.update({"host_id": inst.host_id, "created": inst.started_at, "label": name, "role": "active"})
-    for d in a.runs if a.runs is not None else ctx.cfg.results.dirs:
-        rec["runs"].setdefault(d, {"ok": False})
-    ctx.store.state["current"] = str(a.instance)
+    with ctx.store.update() as st:
+        rec = ctx.store.rec(a.instance, create=True)
+        rec.update({"host_id": inst.host_id, "created": inst.started_at, "label": name, "role": "active"})
+        for d in a.runs if a.runs is not None else ctx.cfg.results.dirs:
+            rec["runs"].setdefault(d, {"ok": False})
+        if not st.get("current"):  # like create: never take the default from another box (ADR 0009)
+            st["current"] = str(a.instance)
     ctx.store.event(f"adopted (host {inst.host_id}, {inst.gpu_name}, status {inst.status})", a.instance)
     return {"id": str(a.instance)}
 
@@ -197,7 +199,7 @@ def cmd_health(ctx: Ctx, a: argparse.Namespace) -> dict:
     ):
         say("WARNING: rebooting restarts the container (running jobs die)")
         ctx.provider.reboot(iid)
-        rec["rebooted_for_outage"] = time.time()
+        ctx.store.patch(iid, rebooted_for_outage=time.time())
         ctx.store.event(f"REBOOT (auto-heal) after {h['unreachable_min']:.0f} min unreachable", iid)
     if h["class"] == "stuck":
         say("STUCK: reporting only; nothing is killed automatically")
@@ -247,16 +249,17 @@ def cmd_status(ctx: Ctx, a: argparse.Namespace) -> dict:
                 f"  host {i.host_id}  label {i.label}  "
                 f"{'managed:' + rec.get('role', '?') if rec else 'unmanaged'}"
             )
-        cur = st.state.get("current")
         for i in insts:
-            if i.id == str(cur):
+            if i.id in st.state["instances"] and i.status in core.UP_STATUSES:
                 core.age_notice(ctx, i.id, i)
         res["instances"] = [
             {k: getattr(i, k) for k in ("id", "status", "gpu_name", "price_per_h", "host_id", "label")} for i in insts
         ]
     except ProviderError as e:
         say(f"API unavailable: {e}")
-    say(f"current: {st.state.get('current')}  batch: {json.dumps(st.state.get('batch'))[:200]}")
+    say(f"current: {st.state.get('current')}")
+    for iid, b in st.state["batches"].items():
+        say(f"[{iid}] batch: {json.dumps(b)[:200]}")
     for iid, rec in st.state["instances"].items():
         if rec.get("role") == "gone":
             continue
@@ -281,6 +284,7 @@ def cmd_status(ctx: Ctx, a: argparse.Namespace) -> dict:
     res.update(
         {
             "current": st.state.get("current"),
+            "batches": st.state["batches"],
             "pending": st.state.get("pending"),
             "managed": st.state["instances"],
             "blocklist": st.state["blocklist"],
@@ -322,10 +326,12 @@ def cmd_logs(ctx: Ctx, a: argparse.Namespace) -> dict:
 
 def cmd_block(ctx: Ctx, a: argparse.Namespace) -> dict:
     if a.remove:
-        ctx.store.state["blocklist"].pop(str(a.host), None)
+        with ctx.store.update() as st:
+            st["blocklist"].pop(str(a.host), None)
         ctx.store.event(f"host {a.host} removed from blocklist")
     else:
-        ctx.store.state["blocklist"][str(a.host)] = a.reason or "manual"
+        with ctx.store.update() as st:
+            st["blocklist"][str(a.host)] = a.reason or "manual"
         ctx.store.event(f"host {a.host} blocklisted: {a.reason or 'manual'}")
     return {"blocklist": ctx.store.state["blocklist"]}
 
@@ -341,7 +347,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", default=argparse.SUPPRESS, help="machine-readable output on stdout"
     )
     common.add_argument(
-        "--id", default=argparse.SUPPRESS, help="instance id (default: the current instance in the state file)"
+        "--id",
+        default=argparse.SUPPRESS,
+        help="instance id (default: the current instance in the state file; always pass it with several boxes)",
     )
     common.add_argument(
         "--config", default=argparse.SUPPRESS, help="path to taxameter.toml (default: nearest one above the cwd)"
