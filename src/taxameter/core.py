@@ -152,9 +152,7 @@ class Store:
             try:
                 st = json.loads(self.path.read_text(encoding="utf-8"))
                 break
-            except FileNotFoundError:
-                break
-            except ValueError:
+            except (FileNotFoundError, ValueError):  # no state yet, or a corrupt file: start empty
                 break
             except OSError:  # Windows: the file is briefly locked while another process replaces it
                 if attempt == 19:
