@@ -265,8 +265,13 @@ def env(tmp_path, monkeypatch):
 def tick(ctx, flags=None):
     """The watchdog reloads state from disk each pass (so manual commands in another shell are seen): persist
     the test setup first, and re-read records afterwards via R(ctx)."""
-    ctx.store.save()
+    persist(ctx)
     return vc.watchdog_tick(ctx, flags or vc.WatchFlags())
+
+
+def persist(ctx):
+    """Write the in-memory test setup to state.json (every library mutation reloads from disk first)."""
+    ctx.store._write()
 
 
 def R(ctx, iid=100):
@@ -278,4 +283,8 @@ def manage(ctx, fake, iid=100, **kw):
     rec = ctx.store.rec(iid, create=True)
     rec["host_id"] = str(fake.instances[iid]["host_id"])
     ctx.store.state["current"] = str(iid)
+    need = getattr(ctx, "test_need", None)  # set by a test fixture: this box asked for a replacement
+    if need and str(need["old"]) == str(iid):
+        rec["need_replacement"] = dict(need)
+    persist(ctx)
     return rec

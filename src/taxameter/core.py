@@ -15,7 +15,8 @@ import subprocess
 import tarfile
 import time
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -126,46 +127,111 @@ def verify_archive(path: Path, marker: str) -> dict[str, int]:
 
 
 # ----------------------------------------------------------------------------------------------- state
+STATE_LOCK_WAIT_S = 30
+
+
 class Store:
+    """The project's state (`state.json`) shared by every taxameter process of the project (ADR 0009).
+
+    Reads see the snapshot loaded at start or at the last `update()`/`refresh()`. Every mutation goes through
+    `with store.update():`, a locked read-modify-write: the lock is taken, the file is reloaded, the body changes
+    `store.state`, the file is written, the lock is released. Keep the body short: no network calls or waits."""
+
     def __init__(self, state_dir: Path, seed_blocklist: dict[str, str] | None = None) -> None:
         self.dir = state_dir
         self.path = state_dir / "state.json"
         self.events_path = state_dir / "events.log"
         self.seed_blocklist = dict(seed_blocklist or {})
+        self._lock = FileLock(state_dir / "state.lock")
+        self._depth = 0
         self.state = self._load()
 
     def _load(self) -> dict:
-        try:
-            st = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            st = {}
+        st: dict = {}
+        for attempt in range(20):
+            try:
+                st = json.loads(self.path.read_text(encoding="utf-8"))
+                break
+            except FileNotFoundError:
+                break
+            except ValueError:
+                break
+            except OSError:  # Windows: the file is briefly locked while another process replaces it
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
         st.setdefault("instances", {})
         st.setdefault("current", None)
         st.setdefault("blocklist", {})
         for h, why in self.seed_blocklist.items():
             st["blocklist"].setdefault(h, why)
         st.setdefault("events", [])
-        st.setdefault("batch", None)
+        st.setdefault("batches", {})
+        old = st.pop("batch", None)  # pre-0009: one batch for the whole project
+        if old:
+            owner = str(old.get("instance") or st.get("current") or "")
+            if owner:
+                st["batches"].setdefault(owner, old)
+        need = st.pop("need_replacement", None)  # pre-0009: one slot for the whole project
+        if need and str(need.get("old")) in st["instances"]:
+            st["instances"][str(need["old"])].setdefault("need_replacement", need)
         st.setdefault("pending", [])
         return st
 
-    def save(self) -> None:
+    def refresh(self) -> None:
+        """Reload from disk (read-only use; a no-op inside `update()`)."""
+        if not self._depth:
+            self.state = self._load()
+
+    @contextmanager
+    def update(self) -> Iterator[dict]:
+        """Locked read-modify-write of the state. Re-entrant within one process."""
+        if self._depth:
+            self._depth += 1
+            try:
+                yield self.state
+            finally:
+                self._depth -= 1
+            return
         self.dir.mkdir(parents=True, exist_ok=True)
+        if not self._lock.acquire(wait=STATE_LOCK_WAIT_S):
+            raise ProviderError(
+                f"state lock {self._lock.path} is held by another process for over {STATE_LOCK_WAIT_S} s"
+            )
+        self._depth = 1
+        try:
+            self.state = self._load()
+            try:
+                yield self.state
+            finally:
+                self._write()
+        finally:
+            self._depth = 0
+            self._lock.release()
+
+    def _write(self) -> None:
         self.state["events"] = self.state["events"][-300:]
+        self.dir.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(redact(json.dumps(self.state, indent=1, sort_keys=True)), encoding="utf-8")
-        os.replace(tmp, self.path)
+        for attempt in range(40):
+            try:
+                os.replace(tmp, self.path)
+                return
+            except PermissionError:  # Windows: a reader has the file open for a moment
+                if attempt == 39:
+                    raise
+                time.sleep(0.05)
 
     def event(self, msg: str, iid: Any = None, echo: bool = True) -> None:
         now = time.time()
         line = redact(f"{iso(now)} {'[' + str(iid) + '] ' if iid else ''}{msg}")
-        self.state["events"].append({"t": now, "id": iid, "msg": redact(msg)})
-        self.dir.mkdir(parents=True, exist_ok=True)
-        with self.events_path.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
+        with self.update() as st:
+            st["events"].append({"t": now, "id": iid, "msg": redact(msg)})
+            with self.events_path.open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
         if echo:
             say(f"{'[' + str(iid) + '] ' if iid else ''}{msg}")
-        self.save()
 
     def rec(self, iid: Any, create: bool = False) -> dict:
         key = str(iid)
@@ -182,42 +248,58 @@ class Store:
             }
         return self.state["instances"][key]
 
+    def patch(self, iid: Any, **fields: Any) -> None:
+        """Set fields on an instance record (locked)."""
+        with self.update():
+            self.rec(iid).update(fields)
+
+    def batch(self, iid: Any) -> dict | None:
+        return self.state["batches"].get(str(iid))
+
     def blocklist(self) -> set[str]:
         return set(self.state["blocklist"])
 
     def pend(self, key: str, msg: str) -> None:
-        self.state["pending"] = [p for p in self.state["pending"] if p["key"] != key]
-        self.state["pending"].append({"key": key, "t": time.time(), "msg": redact(msg)})
+        with self.update() as st:
+            st["pending"] = [p for p in st["pending"] if p["key"] != key]
+            st["pending"].append({"key": key, "t": time.time(), "msg": redact(msg)})
 
     def unpend(self, key: str) -> None:
-        self.state["pending"] = [p for p in self.state["pending"] if p["key"] != key]
+        with self.update() as st:
+            st["pending"] = [p for p in st["pending"] if p["key"] != key]
 
 
 # ----------------------------------------------------------------------------------------------- process lock
 class FileLock:
-    """Exclusive, non-blocking OS file lock that dies with the process (msvcrt on Windows, flock elsewhere), so a
-    crashed `nightly` never blocks the watchdog."""
+    """Exclusive OS file lock that dies with the process (msvcrt on Windows, flock elsewhere), so a crashed
+    `nightly` never blocks the watchdog. Non-blocking unless `acquire(wait=...)`."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.fh: Any = None
 
-    def acquire(self) -> bool:
+    def acquire(self, wait: float = 0) -> bool:
+        """Try to take the lock, polling for up to `wait` seconds."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fh = self.path.open("a+b")
-        try:
-            if os.name == "nt":
-                import msvcrt
+        deadline = time.monotonic() + wait
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
 
-                fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
 
-                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            fh.close()
-            return False
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    fh.close()
+                    return False
+                time.sleep(0.02)
         self.fh = fh
         return True
 
@@ -272,7 +354,13 @@ class Ctx:
         return {**self.cfg.policy, **overrides}
 
     def iid(self, given: Any = None) -> str:
-        iid = given or self.store.state.get("current")
+        """The instance a command works on: `given` (--id) as is, else the default `current`. An explicit id never
+        falls back to `current`."""
+        if given is not None:
+            if not str(given).strip():
+                raise ProviderError("empty --id")
+            return str(given)
+        iid = self.store.state.get("current")
         if not iid:
             raise ProviderError("no instance: pass --id or create/adopt one")
         return str(iid)
@@ -392,9 +480,17 @@ class Remote:
 
     def __init__(self, ctx: Ctx, iid: Any) -> None:
         self.ctx, self.iid = ctx, str(iid)
-        self.rec = ctx.store.rec(iid)
+        ctx.store.rec(iid)  # refuses an unmanaged instance
         self.known_hosts = ctx.store.dir / f"known_hosts_{self.iid}"
         self.helper_ok = False
+
+    @property
+    def rec(self) -> dict:
+        """The instance's record in the current state snapshot (never hold it across a store update)."""
+        return self.ctx.store.rec(self.iid)
+
+    def _patch(self, **fields: Any) -> None:
+        self.ctx.store.patch(self.iid, **fields)
 
     def _common(self) -> list[str]:
         return [
@@ -414,22 +510,24 @@ class Remote:
     def fresh_endpoints(self) -> list[Endpoint]:
         inst = self.ctx.provider.instance(self.iid)
         eps = list(inst.endpoints) if inst else []
-        self.rec["endpoints"] = {
-            "resolved_at": time.time(),
-            "all": [e.to_dict() for e in eps],
-            "last_ok": self.rec.get("endpoints", {}).get("last_ok"),
+        fields: dict[str, Any] = {
+            "endpoints": {
+                "resolved_at": time.time(),
+                "all": [e.to_dict() for e in eps],
+                "last_ok": (self.rec.get("endpoints") or {}).get("last_ok"),
+            }
         }
         if inst:
-            self.rec["host_id"] = inst.host_id
-            self.rec["api_status"] = inst.status
+            fields.update(host_id=inst.host_id, api_status=inst.status)
+        self._patch(**fields)
         return eps
 
     def cached(self) -> Endpoint | None:
         return Endpoint.from_dict((self.rec.get("endpoints") or {}).get("last_ok"))
 
     def _mark_ok(self, ep: Endpoint) -> None:
-        self.rec.setdefault("endpoints", {})["last_ok"] = dict(ep.to_dict(), at=time.time())
-        self.ctx.store.save()
+        with self.ctx.store.update():
+            self.rec.setdefault("endpoints", {})["last_ok"] = dict(ep.to_dict(), at=time.time())
 
     def attempt(
         self,
@@ -531,9 +629,17 @@ class Remote:
 
 
 class _TmpRemote(Remote):
-    def __init__(self, ctx: Ctx, iid: Any) -> None:  # unmanaged instance: no state record
-        self.ctx, self.iid, self.rec, self.helper_ok = ctx, str(iid), {}, False
+    rec: dict = {}  # type: ignore[assignment]  # unmanaged instance: no state record
+
+    def __init__(self, ctx: Ctx, iid: Any) -> None:
+        self.ctx, self.iid, self.helper_ok = ctx, str(iid), False
         self.known_hosts = ctx.store.dir / f"known_hosts_{iid}"
+
+    def _patch(self, **fields: Any) -> None:
+        pass
+
+    def _mark_ok(self, ep: Endpoint) -> None:
+        pass
 
 
 # ----------------------------------------------------------------------------------------------- offers / renting
@@ -619,30 +725,34 @@ def create_instance(
     image = image or ctx.cfg.image_ref()
     spec = CreateSpec(image, ctx.policy["disk_gb"], ctx.cfg.project.name, boxenv.ONSTART, interruptible)
     iid = ctx.provider.create(offer, spec)
-    rec = st.rec(iid, create=True)
-    rec.update(
-        {
-            "created": time.time(),
-            "label": spec.label,
-            "host_id": offer.host_id,
-            "role": "active" if make_current else "candidate",
-            "api_status": "loading",
-            "image": image,
-            "offer": {
-                "id": offer.id,
-                "gpu_name": offer.gpu_name,
-                "price_per_h": offer.price_per_h,
-                "location": offer.location,
+    with st.update():
+        st.rec(iid, create=True).update(
+            {
+                "created": time.time(),
+                "label": spec.label,
                 "host_id": offer.host_id,
-            },
-        }
-    )
-    if make_current:
-        st.state["current"] = iid
+                "role": "active" if make_current else "candidate",
+                "api_status": "loading",
+                "image": image,
+                "offer": {
+                    "id": offer.id,
+                    "gpu_name": offer.gpu_name,
+                    "price_per_h": offer.price_per_h,
+                    "location": offer.location,
+                    "host_id": offer.host_id,
+                },
+            }
+        )
+        # current is the default for interactive single-box use: only claim it when nothing is current (ADR 0009)
+        if make_current and not st.state.get("current"):
+            st.state["current"] = iid
+        current = st.state.get("current")
     st.event(
         f"created instance on host {offer.host_id} ({offer.gpu_name}, ${offer.price_per_h:.3f}/h) {reason}".strip(),
         iid,
     )
+    if str(current) != iid:
+        say(f"current stays {current}; pass --id {iid} to work on the new box")
     return iid
 
 
@@ -660,6 +770,7 @@ def check_cap(ctx: Ctx, overlap_with: str | None = None) -> list[Instance]:
     project's state store (an adopted box keeps a foreign label until relabelled). A replacement whose old box is
     up may overlap it up to max_instances_during_migration."""
     insts = ctx.provider.instances()
+    ctx.store.refresh()  # boxes another process of this project adopted or created meanwhile
     mine = ctx.store.state["instances"]
     up = [i for i in insts if i.status in UP_STATUSES and (i.label == ctx.cfg.project.name or i.id in mine)]
     pol = ctx.policy
@@ -925,8 +1036,7 @@ def provision(ctx: Ctx, iid: str, models: list[str] | None = None, wait_min: flo
     st = ctx.store
     remote = Remote(ctx, iid)
     # the watchdog must not idle-stop the box while it downloads and installs (see _tick_active)
-    st.rec(iid).update(provision_started=time.time(), provisioned=None)
-    st.save()
+    st.patch(iid, provision_started=time.time(), provisioned=None)
     push_code(ctx, remote)
     models = list(models or [])
     args = " ".join(shlex.quote(m) for m in models)
@@ -958,9 +1068,11 @@ def provision(ctx: Ctx, iid: str, models: list[str] | None = None, wait_min: flo
         if "PROVISION_DONE" in out:
             ok = "PROVISION_DONE rc=0" in out
             kv = [ln for ln in out.splitlines() if ln.startswith(("model=", "run=", "watchdog=", "cuda:"))]
-            rec = st.rec(iid)
-            rec["inventory"] = {"t": time.time(), "models": models, "lines": kv}
-            rec["provisioned"] = time.time() if ok else None
+            st.patch(
+                iid,
+                inventory={"t": time.time(), "models": models, "lines": kv},
+                provisioned=time.time() if ok else None,
+            )
             st.event(f"provision {'OK' if ok else 'FAILED'}: {'; '.join(kv)[:300]}", iid)
             if not ok:
                 say(out[-1500:])
@@ -980,11 +1092,12 @@ def start_batch(ctx: Ctx, iid: str, batch: dict) -> Result:
     if r.rc != 0 or "launched" not in r.out:
         raise ProviderError(f"job did not start (rc={r.rc}): {(r.out + r.err)[-300:]}")
     batch = dict(batch, instance=iid, started=time.time(), all_done=False)
-    ctx.store.state["batch"] = batch
-    rec = ctx.store.rec(iid)
-    for d in batch.get("runs_dirs", ctx.cfg.results.dirs):
-        rec["runs"].setdefault(d, {"ok": False})
-        rec["runs"][d]["ok"] = False  # new results will appear; needs a fresh fetch
+    with ctx.store.update() as st:
+        st["batches"][str(iid)] = batch
+        rec = ctx.store.rec(iid)
+        for d in batch.get("runs_dirs", ctx.cfg.results.dirs):
+            rec["runs"].setdefault(d, {"ok": False})
+            rec["runs"][d]["ok"] = False  # new results will appear; needs a fresh fetch
     ctx.store.event(f"job started: {batch['script']} {' '.join(map(str, batch.get('args', [])))}".strip(), iid)
     return r
 
@@ -994,8 +1107,7 @@ def fetch(ctx: Ctx, iid: str, dirs: list[str] | None = None, minutes: float | No
     unpacks and contains done markers, unpack into the repo, record per-dir success in state. A verified fetch
     also records the host as last-good for the next `offers` ranking."""
     st = ctx.store
-    rec = st.rec(iid)
-    dirs = dirs or list(rec.get("runs") or {}) or list(ctx.cfg.results.dirs)
+    dirs = dirs or list(st.rec(iid).get("runs") or {}) or list(ctx.cfg.results.dirs)
     minutes = ctx.policy["fetch_wait_min"] if minutes is None else minutes
     rounds = max(1, int(minutes * 60 / ctx.policy["ssh_retry_s"]))
     remote = Remote(ctx, iid)
@@ -1023,24 +1135,26 @@ def fetch(ctx: Ctx, iid: str, dirs: list[str] | None = None, minutes: float | No
         st.event(f"fetch: archive does not unpack: {e}", iid)
         return False
     all_ok = True
-    for d in dirs:
-        n = sum(v for k, v in counts.items() if k.startswith(d.rstrip("/") + "/"))
-        rec["runs"][d] = {
-            "ok": n > 0,
-            "markers": n,
-            "fetched_at": time.time(),
-            "archive": archive.name,
-            "md5": md5,
-        }
-        all_ok &= n > 0
+    with st.update():
+        rec = st.rec(iid)
+        for d in dirs:
+            n = sum(v for k, v in counts.items() if k.startswith(d.rstrip("/") + "/"))
+            rec["runs"][d] = {
+                "ok": n > 0,
+                "markers": n,
+                "fetched_at": time.time(),
+                "archive": archive.name,
+                "md5": md5,
+            }
+            all_ok &= n > 0
+        if all_ok and rec.get("host_id"):
+            st.state["last_good_host"] = str(rec["host_id"])
+        markers = {d: rec["runs"][d]["markers"] for d in dirs}
     st.event(
         f"fetch: {archive.name} {archive.stat().st_size // 1024} KB, done markers per dir: "
-        f"{ {d: rec['runs'][d]['markers'] for d in dirs} } -> {'verified' if all_ok else 'INCOMPLETE'}",
+        f"{markers} -> {'verified' if all_ok else 'INCOMPLETE'}",
         iid,
     )
-    if all_ok and rec.get("host_id"):
-        st.state["last_good_host"] = str(rec["host_id"])
-        st.save()
     return all_ok
 
 
@@ -1051,6 +1165,7 @@ def all_fetched(rec: dict) -> tuple[bool, list[str]]:
 
 def destroy(ctx: Ctx, iid: str, force: bool = False, reason: str = "") -> bool:
     st = ctx.store
+    st.refresh()
     rec = st.state["instances"].get(str(iid))
     if rec is None and not force:
         say(f"refusing: {iid} is not managed by taxameter (pass --force to destroy anyway)")
@@ -1063,26 +1178,30 @@ def destroy(ctx: Ctx, iid: str, force: bool = False, reason: str = "") -> bool:
                 "(run `fetch`, or pass --force to lose them)"
             )
             return False
-        rec["destroyed_inventory"] = {
-            "inventory": rec.get("inventory"),
-            "runs": rec.get("runs"),
-            "last_health": rec.get("last_health"),
-        }
+        st.patch(
+            iid,
+            destroyed_inventory={
+                "inventory": rec.get("inventory"),
+                "runs": rec.get("runs"),
+                "last_health": rec.get("last_health"),
+            },
+        )
     ctx.provider.destroy(str(iid))
-    if rec is not None:
-        rec["role"] = "gone"
-        rec["destroyed"] = time.time()
-    if str(st.state.get("current")) == str(iid):
-        st.state["current"] = None
+    with st.update() as s:
+        if str(iid) in s["instances"]:
+            s["instances"][str(iid)].update(role="gone", destroyed=time.time())
+        s["batches"].pop(str(iid), None)  # a destroyed box has no batch left to wait for
+        if str(s.get("current")) == str(iid):
+            s["current"] = None
     st.event(f"DESTROYED {reason}".strip(), iid)
     return True
 
 
 def stop(ctx: Ctx, iid: str, reason: str = "") -> None:
     ctx.provider.stop(str(iid))
-    rec = ctx.store.state["instances"].get(str(iid))
-    if rec is not None:
-        rec["stop_requested"] = time.time()
+    with ctx.store.update() as st:
+        if str(iid) in st["instances"]:
+            st["instances"][str(iid)]["stop_requested"] = time.time()
     ctx.store.event(f"stop requested {reason}".strip(), iid)
 
 
@@ -1090,14 +1209,12 @@ def stop(ctx: Ctx, iid: str, reason: str = "") -> None:
 def health_check(ctx: Ctx, iid: str, inst: Instance | None = None, heal_watchdog: bool = True, rounds: int = 0) -> dict:
     """One check: API status, reachable endpoint, on-box probe; outage/idle bookkeeping in state."""
     st, pol = ctx.store, ctx.policy
-    rec = st.rec(iid)
+    st.rec(iid)  # refuses an unmanaged instance
     now = time.time()
     if inst is None:
         inst = ctx.provider.instance(iid)
     status = inst.status if inst else "gone"
-    rec["api_status"] = status
-    if inst:
-        rec["host_id"] = inst.host_id
+    st.patch(iid, api_status=status, **({"host_id": inst.host_id} if inst else {}))
     probe = None
     endpoint = None
     if status == "running":
@@ -1117,6 +1234,16 @@ def health_check(ctx: Ctx, iid: str, inst: Instance | None = None, heal_watchdog
             except (Unreachable, ProviderError) as e:
                 say(f"[{iid}] could not relaunch watchdog: {e}")
     cls, why = classify(status, probe, pol)
+    with st.update():  # all bookkeeping in one locked update; the network work is done
+        h = _health_bookkeeping(ctx, iid, status, cls, why, probe, endpoint, now)
+    return h
+
+
+def _health_bookkeeping(
+    ctx: Ctx, iid: str, status: str, cls: str, why: list[str], probe: dict | None, endpoint: Endpoint | None, now: float
+) -> dict:
+    st, pol = ctx.store, ctx.policy
+    rec = st.rec(iid)
     # outage bookkeeping
     if cls == "unreachable":
         if not rec.get("unreachable_since"):
@@ -1148,14 +1275,8 @@ def health_check(ctx: Ctx, iid: str, inst: Instance | None = None, heal_watchdog
             "batch_started": probe.get("batch_started"),
             "batch_all_done": probe.get("batch_all_done"),
         }
-        b = st.state.get("batch")
-        if (
-            b
-            and str(b.get("instance")) == str(iid)
-            and not b.get("all_done")
-            and probe.get("batch_all_done") == "1"
-            and probe.get("batch_alive") == "0"
-        ):
+        b = st.batch(iid)
+        if b and not b.get("all_done") and probe.get("batch_all_done") == "1" and probe.get("batch_alive") == "0":
             b["all_done"] = True
             b["done_at"] = now
             st.event(f"batch ALL DONE ({probe.get('batch_done')} jobs, {probe.get('batch_failed')} failed)", iid)
@@ -1186,7 +1307,6 @@ def health_check(ctx: Ctx, iid: str, inst: Instance | None = None, heal_watchdog
         )
     elif rec.pop("migrate_recommended", None):
         st.unpend(f"migrate-{iid}")
-    st.save()
     return h
 
 
@@ -1229,8 +1349,9 @@ class WatchFlags:
     dry_run: bool = False
 
 
-def pending_work(st: Store) -> bool:
-    b = st.state.get("batch")
+def pending_work(st: Store, iid: str) -> bool:
+    """The instance has a batch that is not finished."""
+    b = st.batch(iid)
     return bool(b and not b.get("all_done"))
 
 
@@ -1250,13 +1371,15 @@ def watchdog_tick(ctx: Ctx, flags: WatchFlags) -> dict:
 
 def _watchdog_tick_locked(ctx: Ctx, flags: WatchFlags) -> dict:
     st = ctx.store
-    st.state, ctx.policy = st._load(), ctx.load_policy()  # pick up manual fetch/adopt/block and config edits
+    st.refresh()  # pick up manual fetch/adopt/block and the other processes' changes
+    ctx.policy = ctx.load_policy()  # and config edits
     pol = ctx.policy
     now = time.time()
     credit = ctx.provider.credit()
     insts = {i.id: i for i in ctx.provider.instances()}
     bal = spend_summary(credit, list(insts.values()))
-    st.state["last_balance"] = dict(bal, t=now)
+    with st.update() as s:
+        s["last_balance"] = dict(bal, t=now)
     runway = bal["runway_h"]
     low = runway is not None and runway < pol["runway_stop_h"]
     if runway is not None and runway < pol["runway_warn_h"]:
@@ -1265,34 +1388,43 @@ def _watchdog_tick_locked(ctx: Ctx, flags: WatchFlags) -> dict:
     else:
         st.unpend("balance")
     report: dict[str, Any] = {"balance": bal, "instances": {}}
-    for iid, rec in list(st.state["instances"].items()):
-        if rec.get("role") == "gone":
+    for iid in list(st.state["instances"]):
+        st.refresh()  # another process may have changed this box meanwhile (fetch, destroy, adopt)
+        rec = st.state["instances"].get(iid)
+        if rec is None or rec.get("role") == "gone":
             continue
         inst = insts.get(iid)
         if inst is None:
-            rec["role"] = "gone"
+            st.patch(iid, role="gone")
             st.event(f"instance no longer exists at {ctx.provider.name}; marked gone", iid)
             continue
         try:
-            rec["api_status"] = inst.status
-            if rec.get("role") == "salvage":
-                report["instances"][iid] = _tick_salvage(ctx, flags, iid, rec, inst)
-            elif rec.get("role") == "candidate":
-                _tick_candidate(ctx, iid, rec)
+            st.patch(iid, api_status=inst.status)
+            role = rec.get("role")
+            if role == "salvage":
+                report["instances"][iid] = _tick_salvage(ctx, flags, iid, inst)
+            elif role == "candidate":
+                _tick_candidate(ctx, iid)
             else:
-                report["instances"][iid] = _tick_active(ctx, flags, iid, rec, inst, low)
+                report["instances"][iid] = _tick_active(ctx, flags, iid, inst, low)
         except (Unreachable, ProviderError, OSError, subprocess.SubprocessError) as e:
             st.event(f"watchdog step failed: {type(e).__name__}: {e}", iid)
     _maybe_replace(ctx, flags)
-    st.state["last_watchdog"] = time.time()
-    st.save()
+    with st.update() as s:
+        s["last_watchdog"] = time.time()
     return report
 
 
-def _stop_over_max_hours(ctx: Ctx, flags: WatchFlags, iid: str, rec: dict, inst: Instance) -> bool:
+def _to_salvage(st: Store, iid: str) -> None:
+    now = time.time()
+    st.patch(iid, role="salvage", salvage_since=now, last_salvage_attempt=now)
+
+
+def _stop_over_max_hours(ctx: Ctx, flags: WatchFlags, iid: str, inst: Instance) -> bool:
     """Hard cost cap: STOP (not destroy: the disk keeps the results) a box running longer than max_box_hours.
     Unfetched results move the box to salvage, which starts it again for short fetch windows."""
-    pol = ctx.policy
+    pol, st = ctx.policy, ctx.store
+    rec = st.rec(iid)
     if inst.status != "running":
         return False
     started = inst.started_at or rec.get("created") or time.time()
@@ -1305,10 +1437,8 @@ def _stop_over_max_hours(ctx: Ctx, flags: WatchFlags, iid: str, rec: dict, inst:
         say(f"[{iid}] (dry-run) would stop: running {hours:.1f} h > max_box_hours {pol['max_box_hours']}")
         return True
     stop(ctx, iid, f"(running {hours:.1f} h > max_box_hours {pol['max_box_hours']})")
-    if not all_fetched(rec)[0]:
-        rec["role"] = "salvage"
-        rec["salvage_since"] = time.time()
-        rec["last_salvage_attempt"] = time.time()
+    if not all_fetched(st.rec(iid))[0]:
+        _to_salvage(st, iid)
     return True
 
 
@@ -1319,13 +1449,14 @@ def _is_provisioning(pol: dict, rec: dict) -> bool:
     )
 
 
-def _tick_active(ctx: Ctx, flags: WatchFlags, iid: str, rec: dict, inst: Instance, low_balance: bool) -> dict:
+def _tick_active(ctx: Ctx, flags: WatchFlags, iid: str, inst: Instance, low_balance: bool) -> dict:
     st, pol = ctx.store, ctx.policy
-    if _stop_over_max_hours(ctx, flags, iid, rec, inst):
+    if _stop_over_max_hours(ctx, flags, iid, inst):
         return {"id": iid, "status": "max_box_hours"}
     h = health_check(ctx, iid, inst)
     say(health_line(h))
     cls, status = h["class"], h["status"]
+    rec = st.rec(iid)
     if status == "running" and cls == "unreachable":
         last = rec.get("last_contact") or {}
         busy = (last.get("exp_procs") or 0) > 0 or (last.get("batch_alive") or 0) > 0
@@ -1340,29 +1471,31 @@ def _tick_active(ctx: Ctx, flags: WatchFlags, iid: str, rec: dict, inst: Instanc
             if not flags.dry_run:
                 stop(ctx, iid, f"({why})")
                 host = str(rec.get("host_id") or inst.host_id)
-                if host and host != "None" and host not in st.state["blocklist"]:
-                    st.state["blocklist"][host] = f"{iso(time.time())}: auto-blocked, {why}"
+                with st.update() as s:
+                    block = bool(host) and host != "None" and host not in s["blocklist"]
+                    if block:
+                        s["blocklist"][host] = f"{iso(time.time())}: auto-blocked, {why}"
+                if block:
                     st.event(f"host {host} added to blocklist", iid)
-                if not all_fetched(rec)[0]:  # else stay active: stopped_since + destroy_after_stopped_h apply
-                    rec["role"] = "salvage"
-                    rec["salvage_since"] = time.time()
-                    rec["last_salvage_attempt"] = time.time()
-                if pending_work(st):
-                    st.state["need_replacement"] = {"t": time.time(), "old": iid, "why": "unreachable"}
+                if not all_fetched(st.rec(iid))[0]:  # else stay active: stopped_since + destroy_after_stopped_h apply
+                    _to_salvage(st, iid)
+                if pending_work(st, iid):
+                    st.patch(iid, need_replacement={"t": time.time(), "old": iid, "why": "unreachable"})
             else:
                 say(f"[{iid}] (dry-run) would stop: {why}")
         elif flags.auto_heal and mins >= pol["reboot_after_unreachable_min"] and not rec.get("rebooted_for_outage"):
             if not flags.dry_run:
                 ctx.provider.reboot(iid)
-                rec["rebooted_for_outage"] = time.time()
+                st.patch(iid, rebooted_for_outage=time.time())
                 st.event(
                     f"REBOOT (auto-heal) after {mins:.0f} min unreachable; this restarts the container "
                     "and kills running jobs",
                     iid,
                 )
         return h
-    if status == "running":
-        rec.pop("rebooted_for_outage", None)
+    if status == "running" and rec.get("rebooted_for_outage"):
+        with st.update():
+            st.rec(iid).pop("rebooted_for_outage", None)
     if cls == "stuck":
         st.pend(f"stuck-{iid}", f"instance {iid} looks stuck: {'; '.join(h['why'])} (not killing anything)")
     else:
@@ -1371,13 +1504,13 @@ def _tick_active(ctx: Ctx, flags: WatchFlags, iid: str, rec: dict, inst: Instanc
     if (
         migrate
         and (flags.allow_migrate or pol["auto_replace"])
-        and pending_work(st)
+        and pending_work(st, iid)
         and not flags.dry_run
-        and not st.state.get("need_replacement")
+        and not rec.get("need_replacement")
     ):
         st.event("migration: fetching results before replacing this host", iid)
         fetch(ctx, iid)
-        st.state["need_replacement"] = {"t": time.time(), "old": iid, "why": "migrate"}
+        st.patch(iid, need_replacement={"t": time.time(), "old": iid, "why": "migrate"})
         return h
     if status == "running" and cls == "idle":
         idle_for = h["idle_min"]
@@ -1395,21 +1528,24 @@ def _tick_active(ctx: Ctx, flags: WatchFlags, iid: str, rec: dict, inst: Instanc
     if status == "stopped":
         stopped_h = (time.time() - rec.get("stopped_since", time.time())) / 3600
         if stopped_h >= pol["destroy_after_stopped_h"] and flags.destroy:
-            ok, missing = all_fetched(rec)
+            ok, missing = all_fetched(st.rec(iid))
             if ok and not flags.dry_run:
                 destroy(ctx, iid, reason=f"(stopped {stopped_h:.1f} h, all results fetched)")
             elif not ok:
-                rec["role"] = "salvage"
-                rec.setdefault("salvage_since", time.time())
-                rec.setdefault("last_salvage_attempt", 0)
+                with st.update():
+                    r = st.rec(iid)
+                    r["role"] = "salvage"
+                    r.setdefault("salvage_since", time.time())
+                    r.setdefault("last_salvage_attempt", 0)
                 st.event(f"stopped {stopped_h:.1f} h with unfetched runs {missing}: salvage", iid)
     return h
 
 
-def _tick_salvage(ctx: Ctx, flags: WatchFlags, iid: str, rec: dict, inst: Instance) -> dict:
+def _tick_salvage(ctx: Ctx, flags: WatchFlags, iid: str, inst: Instance) -> dict:
     """Old box with results not yet fetched: periodically start it, fetch in a short window, destroy when
     verified; give up after destroy_unfetched_after_h and log what was lost."""
     st, pol = ctx.store, ctx.policy
+    rec = st.rec(iid)
     now = time.time()
     status = inst.status
     ok, missing = all_fetched(rec)
@@ -1439,15 +1575,16 @@ def _tick_salvage(ctx: Ctx, flags: WatchFlags, iid: str, rec: dict, inst: Instan
             return info
         if window and (now - window) / 60 >= pol["salvage_window_min"]:
             stop(ctx, iid, "(salvage window over)")
-            rec.pop("salvage_window_start", None)
+            with st.update():
+                st.rec(iid).pop("salvage_window_start", None)
         elif not window:
             stop(ctx, iid, "(re-issuing stop: API still reports running)")
     elif status == "stopped":
-        rec.pop("salvage_window_start", None)
+        with st.update():
+            st.rec(iid).pop("salvage_window_start", None)
         if (now - rec.get("last_salvage_attempt", 0)) / 3600 >= pol["salvage_every_h"]:
             ctx.provider.start(iid)
-            rec["salvage_window_start"] = now
-            rec["last_salvage_attempt"] = now
+            st.patch(iid, salvage_window_start=now, last_salvage_attempt=now)
             st.event(f"salvage: started old instance for a {pol['salvage_window_min']} min fetch window", iid)
     return info
 
@@ -1471,22 +1608,28 @@ def verify_box(ctx: Ctx, iid: str, models: list[str]) -> bool:
 
 
 def _maybe_replace(ctx: Ctx, flags: WatchFlags) -> None:
+    """Replace every box that asked for it (`need_replacement` on its record), one after the other."""
+    st = ctx.store
+    st.refresh()
+    for old_id, rec in list(st.state["instances"].items()):
+        if rec.get("need_replacement"):
+            _replace_one(ctx, flags, old_id)
+
+
+def _replace_one(ctx: Ctx, flags: WatchFlags, old_id: str) -> None:
     """Make-before-break: rent, provision and verify a replacement while the old box keeps running (or stays
-    stopped); only then switch state, push fetched results, resume the batch, and fetch + retire the old box.
-    A replacement that fails any step is destroyed (it holds no data) and the old box is kept."""
+    stopped); only then switch state, push fetched results, resume the box's batch there, and fetch + retire the
+    old box. A replacement that fails any step is destroyed (it holds no data) and the old box is kept."""
     st, pol = ctx.store, ctx.policy
-    need = st.state.get("need_replacement")
-    if not need:
-        return
-    old_id = str(need["old"])
-    if not pending_work(st):
-        st.state["need_replacement"] = None
+    need = st.rec(old_id)["need_replacement"]
+    if not pending_work(st, old_id):
+        st.patch(old_id, need_replacement=None)
         return
     if not (pol["auto_replace"] or flags.allow_migrate):
         st.pend("replace", f"replacement needed ({need.get('why')}) but auto_replace is off")
         return
     if flags.dry_run:
-        say("(dry-run) would rent + provision + verify a replacement, then resume the batch there")
+        say(f"(dry-run) would rent + provision + verify a replacement for {old_id}, then resume the batch there")
         return
     if time.time() < need.get("next_try", 0):
         return
@@ -1506,7 +1649,7 @@ def _maybe_replace(ctx: Ctx, flags: WatchFlags) -> None:
     except RentRefused as e:
         st.pend("replace", f"replacement needed but not rented: {e}")
         if e.retry_later:
-            need["next_try"] = time.time() + 60 * pol["replace_retry_min"]
+            st.patch(old_id, need_replacement=dict(need, next_try=time.time() + 60 * pol["replace_retry_min"]))
         return
     st.unpend("replace")
     ok = (
@@ -1516,48 +1659,53 @@ def _maybe_replace(ctx: Ctx, flags: WatchFlags) -> None:
     )
     if not ok:
         st.event(f"candidate failed; destroying it (holds no data) and keeping {old_id}", new)
-        st.state["blocklist"].setdefault(str(best.host_id), f"{iso(time.time())}: replacement failed")
-        st.rec(new)["runs"] = {}
+        with st.update() as s:
+            s["blocklist"].setdefault(str(best.host_id), f"{iso(time.time())}: replacement failed")
+        st.patch(new, runs={})
         destroy(ctx, new, reason="(failed replacement)")
-        need["next_try"] = time.time() + 60 * pol["replace_retry_min"]
+        st.patch(old_id, need_replacement=dict(need, next_try=time.time() + 60 * pol["replace_retry_min"]))
         return
-    # switch
-    st.rec(new)["role"] = "active"
-    st.state["current"] = new
-    batch = st.state["batch"]
+    # switch: the new box takes over the old box's batch; `current` follows only if it pointed at the old box
+    with st.update() as s:
+        s["instances"][new]["role"] = "active"
+        if not s.get("current") or str(s["current"]) == old_id:
+            s["current"] = new
+    batch = dict(st.batch(old_id) or {})
     push_runs(ctx, Remote(ctx, new), batch.get("runs_dirs", ctx.cfg.results.dirs))
     start_batch(ctx, new, batch)
-    st.state["need_replacement"] = None
+    with st.update() as s:
+        s["batches"].pop(old_id, None)
+        s["instances"][old_id]["need_replacement"] = None
     st.unpend(f"migrate-{old_id}")
-    st.event(f"switched: {new} is current and running the batch (old {old_id})", new)
+    st.event(f"switched: {new} runs the batch of {old_id}", new)
     _retire(ctx, flags, old_id)
 
 
 def _retire(ctx: Ctx, flags: WatchFlags, iid: str) -> None:
     """Old box after a switch: final fetch if it is up, stop it, destroy when everything is fetched, else salvage."""
     st = ctx.store
-    rec = st.rec(iid)
-    rec["role"] = "retired"
-    if rec.get("api_status") == "running":
+    st.patch(iid, role="retired")
+    if st.rec(iid).get("api_status") == "running":
         try:
             fetch(ctx, iid, minutes=2)
         except (Unreachable, ProviderError) as e:
             say(f"[{iid}] final fetch failed: {e}")
         stop(ctx, iid, "(retired after switch)")
-    if all_fetched(rec)[0]:
+    ok, missing = all_fetched(st.rec(iid))
+    if ok:
         if flags.destroy:
             destroy(ctx, iid, reason="(retired; all results fetched)")
     else:
-        rec.update(role="salvage", salvage_since=time.time(), last_salvage_attempt=time.time())
-        st.event(f"retired with unfetched runs {all_fetched(rec)[1]}: salvage", iid)
+        _to_salvage(st, iid)
+        st.event(f"retired with unfetched runs {missing}: salvage", iid)
 
 
-def _tick_candidate(ctx: Ctx, iid: str, rec: dict) -> None:
+def _tick_candidate(ctx: Ctx, iid: str) -> None:
     """A candidate left over from an interrupted replacement (it holds no data): destroy once it is stale."""
     pol = ctx.policy
-    age_min = (time.time() - rec.get("created", time.time())) / 60
+    age_min = (time.time() - ctx.store.rec(iid).get("created", time.time())) / 60
     if age_min > pol["create_wait_min"] + pol["provision_wait_min"] + 15:
-        rec["runs"] = {}
+        ctx.store.patch(iid, runs={})
         destroy(ctx, iid, reason=f"(stale candidate, {age_min:.0f} min old, never switched to)")
 
 
@@ -1656,7 +1804,7 @@ def _nightly_locked(ctx: Ctx, a: argparse.Namespace) -> dict:
         return res
 
     def abort(why: str) -> dict:
-        st.rec(iid)["runs"] = {}  # nothing was produced on the box: the destroy guard has nothing to protect
+        st.patch(iid, runs={})  # nothing was produced on the box: the destroy guard has nothing to protect
         destroy(ctx, iid, reason=f"(nightly aborted: {why})")
         return finish(False, why)
 
@@ -1680,8 +1828,10 @@ def _nightly_locked(ctx: Ctx, a: argparse.Namespace) -> dict:
         raise
     rc = wait_nightly(ctx, iid, a.wait_min or pol["nightly_wait_min"], script)
     res["rc"] = rc
-    if rc is not None and st.state.get("batch"):
-        st.state["batch"]["all_done"] = True
+    if rc is not None:
+        with st.update() as s:
+            if s["batches"].get(iid):
+                s["batches"][iid]["all_done"] = True
     try:
         fetched = fetch(ctx, iid)
     except (Unreachable, ProviderError) as e:

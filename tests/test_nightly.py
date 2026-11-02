@@ -6,7 +6,7 @@ import itertools
 import json
 
 import pytest
-from conftest import R, make_instance, manage, offer, tick
+from conftest import R, make_instance, manage, offer, persist, tick
 
 from taxameter import cli
 from taxameter import core as vc
@@ -25,14 +25,16 @@ def nightly_env(env, monkeypatch):
 
     def start(c, i, b):
         order.append(("start", b["script"], b["args"]))
-        c.store.rec(i)["runs"].update({"bench/results": {"ok": False}})
+        with c.store.update():
+            c.store.rec(i)["runs"].update({"bench/results": {"ok": False}})
         return vc.Result(0, "", "")
 
     monkeypatch.setattr(vc, "start_batch", start)
 
     def fake_fetch(c, i, *a, **k):
         order.append("fetch")
-        c.store.rec(i)["runs"]["bench/results"]["ok"] = shell.fetch_ok
+        with c.store.update():
+            c.store.rec(i)["runs"]["bench/results"]["ok"] = shell.fetch_ok
         return shell.fetch_ok
 
     shell.fetch_ok = True
@@ -376,8 +378,13 @@ def test_watchdog_replacement_refuses_when_an_unmanaged_box_of_this_project_is_u
     ctx, fake, _ = env
     ctx.cfg.policy["auto_replace"] = True
     ctx.policy = ctx.load_policy()
-    ctx.store.state["batch"] = {"script": "s.sh", "args": [], "runs_dirs": ["bench/results"], "instance": "100"}
-    ctx.store.state["need_replacement"] = {"t": 0, "old": "100", "why": "unreachable"}
+    ctx.store.state["batches"]["100"] = {
+        "script": "s.sh",
+        "args": [],
+        "runs_dirs": ["bench/results"],
+        "instance": "100",
+    }
+    ctx.test_need = {"t": 0, "old": "100", "why": "unreachable"}
     fake.offers = [offer(2, 20, 0.3, 250)]
     manage(ctx, fake, status="exited")  # the old box is stopped, so the steady-state limit applies
     unmanaged(fake)
@@ -393,6 +400,7 @@ def test_adopted_box_with_foreign_label_blocks_create_and_nightly(env, nightly_e
     ctx, fake, shell, order = nightly_env
     unmanaged(fake, label=label)
     ctx.store.rec("200", create=True)  # adopted: in the state store, label not (yet) the project name
+    persist(ctx)
     assert cli.main(["create", "--auto"], ctx) == 1
     assert not fake.calls("PUT", "/asks/")
     out = capsys.readouterr().out

@@ -11,7 +11,7 @@ import tarfile
 import time
 
 import pytest
-from conftest import FAKE_BOX_FILES, KEY, R, manage, offer, tick
+from conftest import FAKE_BOX_FILES, KEY, R, manage, offer, persist, tick
 
 from taxameter import core as vc
 from taxameter.config import DEFAULT_POLICY
@@ -154,15 +154,17 @@ def test_health_records_outage_and_recommends_migration(env):
         {"start": now - 7000, "end": now - 5000, "min": 33},
         {"start": now - 3000, "end": now - 1500, "min": 25},
     ]
+    persist(ctx)
     shell.down = {41022, 19554}
     h = vc.health_check(ctx, "100")
-    assert h["class"] == "unreachable" and rec["unreachable_since"]
+    assert h["class"] == "unreachable" and R(ctx)["unreachable_since"]
     assert any(p["key"] == "migrate-100" for p in ctx.store.state["pending"])  # 3rd outage within 3 h
     shell.down = set()
-    rec["unreachable_since"] = time.time() - 1680
+    with ctx.store.update():
+        R(ctx)["unreachable_since"] = time.time() - 1680
     h = vc.health_check(ctx, "100")
-    assert h["class"] == "healthy" and "unreachable_since" not in rec
-    assert rec["outages"][-1]["min"] == pytest.approx(28, abs=0.5)
+    assert h["class"] == "healthy" and "unreachable_since" not in R(ctx)
+    assert R(ctx)["outages"][-1]["min"] == pytest.approx(28, abs=0.5)
 
 
 # ------------------------------------------------------------------------------------------------ money
@@ -197,6 +199,7 @@ def test_destroy_refuses_without_fetch_and_force_overrides(env, capsys):
     ctx, fake, _ = env
     rec = manage(ctx, fake)
     rec["runs"] = {"bench/results": {"ok": False}}
+    persist(ctx)
     assert vc.destroy(ctx, "100") is False
     assert not fake.calls("DELETE")
     assert "not fetched" in capsys.readouterr().out
@@ -215,9 +218,10 @@ def test_fetch_verifies_unpacks_and_allows_destroy(env):
     ctx, fake, _ = env
     rec = manage(ctx, fake)
     rec["runs"] = {"bench/results": {"ok": False}}
+    persist(ctx)
     assert vc.fetch(ctx, "100")
     assert (ctx.root / "bench/results/20260101/DONE").exists()
-    assert rec["runs"]["bench/results"]["ok"] and rec["runs"]["bench/results"]["markers"] == 1
+    assert R(ctx)["runs"]["bench/results"]["ok"] and R(ctx)["runs"]["bench/results"]["markers"] == 1
     assert vc.destroy(ctx, "100")
     assert fake.calls("DELETE")
 
@@ -296,7 +300,7 @@ def test_missing_ssh_binary_is_not_an_outage(env, monkeypatch):
         raise FileNotFoundError(argv[0])
 
     monkeypatch.setattr(vc.subprocess, "run", no_ssh)
-    ctx.store.save()
+    persist(ctx)
     assert vc.watchdog_loop(ctx, vc.WatchFlags(), once=True, interval=1) == 0
     assert not fake.calls("PUT") and not fake.calls("DELETE")
     assert "not found on PATH" in (ctx.store.dir / "events.log").read_text()
@@ -345,13 +349,13 @@ def replace_env(env, monkeypatch):
     ctx, fake, shell = env
     ctx.cfg.policy["auto_replace"] = True  # off by default
     ctx.policy = ctx.load_policy()
-    ctx.store.state["batch"] = {
+    ctx.store.state["batches"]["100"] = {
         "script": "scripts/nightly.sh",
         "args": [],
         "runs_dirs": ["bench/results"],
         "instance": "100",
     }
-    ctx.store.state["need_replacement"] = {"t": time.time(), "old": "100", "why": "migrate"}
+    ctx.test_need = {"t": time.time(), "old": "100", "why": "migrate"}
     fake.offers = [offer(1, 555, 0.2, 400), offer(2, 20, 0.3, 250)]
     started, order = [], []
     monkeypatch.setattr(vc, "wait_ready", lambda c, i, m: Endpoint("direct", "1.2.3.4", 41022))
@@ -373,7 +377,7 @@ def test_make_before_break_switches_only_after_verify(replace_env):
     stops = [r for r in fake.requests if r[0] == "PUT" and r[1] == "/api/v0/instances/100/"]
     assert stops and json.loads(stops[0][2]) == {"state": "stopped"}  # old one stopped only after the switch
     assert order == [("provision", "999"), ("push_runs", "999"), ("start_batch", "999")]
-    assert ctx.store.state["current"] == "999" and ctx.store.state["need_replacement"] is None
+    assert ctx.store.state["current"] == "999" and R(ctx).get("need_replacement") is None
     assert R(ctx)["runs"]["bench/results"]["ok"]  # final fetch from the old box before retiring it
     assert fake.calls("DELETE", "/instances/100/")  # retired and fully fetched -> destroyed
 
@@ -397,12 +401,14 @@ def test_replacement_limits_and_spend_guard(replace_env):
     ctx.store.state["current"] = "100"
     tick(ctx, vc.WatchFlags(destroy=False))
     assert not fake.calls("PUT", "/asks/")
-    ctx.store.state["instances"].pop("101")
+    with ctx.store.update() as st:
+        st["instances"].pop("101")
     fake.instances.pop(101)
     fake.credit = 0.5  # runway < 3 h with the new box billing too -> no rental
     tick(ctx, vc.WatchFlags(destroy=False))
     assert not fake.calls("PUT", "/asks/")
-    ctx.store.state["need_replacement"]["next_try"] = 0
+    with ctx.store.update():
+        R(ctx)["need_replacement"]["next_try"] = 0
     fake.credit = 50.0
     tick(ctx, vc.WatchFlags(destroy=False))
     assert fake.calls("PUT", "/asks/2/") and started == ["999"]
@@ -414,7 +420,7 @@ def test_replacement_not_rented_is_pending_and_retried_later(replace_env):
     fake.offers = []
     tick(ctx)
     assert any(p["key"] == "replace" and "no offers" in p["msg"] for p in ctx.store.state["pending"])
-    assert ctx.store.state["need_replacement"]["next_try"] > time.time() and not started
+    assert R(ctx)["need_replacement"]["next_try"] > time.time() and not started
 
 
 def test_low_balance_warns(env, capsys):
@@ -562,15 +568,16 @@ def test_start_batch_requires_launched_marker(env):
     shell.run_out = "no such script: scripts/nightly.sh\n"
     with pytest.raises(vc.ProviderError, match="did not start"):
         vc.start_batch(ctx, "100", {"script": "scripts/nightly.sh", "args": []})
-    assert ctx.store.state["batch"] is None
+    assert ctx.store.state["batches"] == {}
 
 
 def test_start_batch_marks_default_dirs_unfetched(env):
     ctx, fake, shell = env
     rec = manage(ctx, fake)
     rec["runs"] = {"bench/results": {"ok": True}}
+    persist(ctx)
     vc.start_batch(ctx, "100", {"script": "scripts/nightly.sh", "args": ["--fast"]})
-    assert rec["runs"]["bench/results"]["ok"] is False and ctx.store.state["batch"]["instance"] == "100"
+    assert R(ctx)["runs"]["bench/results"]["ok"] is False and ctx.store.state["batches"]["100"]["instance"] == "100"
     assert any(c.endswith("box.sh run scripts/nightly.sh --fast") for c in shell.ssh_cmds())
 
 
@@ -600,7 +607,7 @@ def test_seed_blocklist_merges_provider_and_config(tmp_path):
     cfg.provider.blocklist = {"4242": "bad host"}
     ctx = vc.Ctx(cfg, sleep=lambda s: None)
     assert {"483833", "366851", "4242"} <= ctx.store.blocklist()
-    ctx.store.state["blocklist"]["4242"] = "edited reason"
-    ctx.store.save()
+    with ctx.store.update() as st:
+        st["blocklist"]["4242"] = "edited reason"
     assert vc.Ctx(cfg).store.state["blocklist"]["4242"] == "edited reason"  # the seed never overwrites state
     assert KEY not in json.dumps(ctx.store.state)

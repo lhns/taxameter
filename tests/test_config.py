@@ -120,7 +120,7 @@ def test_invalid_config_json_warns_and_is_ignored(tmp_path, capsys):
 
 def test_watchdog_picks_up_config_json_edits(env):
     ctx, fake, _ = env
-    ctx.store.save()
+    ctx.store._write()
     (ctx.store.dir / "config.json").write_text(json.dumps({"max_box_hours": 9}))
     vc.watchdog_tick(ctx, vc.WatchFlags())
     assert ctx.policy["max_box_hours"] == 9
