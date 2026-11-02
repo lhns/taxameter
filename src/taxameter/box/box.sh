@@ -210,7 +210,8 @@ probe_speed() {  # bytes/s for the first 8 MB of a URL: best of 2 tries of 10 s 
 }
 
 pfetch() {  # pfetch URL OUT SIZE [N]: N parallel ranged requests (hosts throttle per connection: 8 x ~0.6 MB/s)
-  local url="$1" out="$2" size="$3" n="${4:-16}" chunk i start end pids=()
+  # N defaults to TAXAMETER_PFETCH_N, else 16 (measure per host before raising it)
+  local url="$1" out="$2" size="$3" n="${4:-${TAXAMETER_PFETCH_N:-16}}" chunk i start end pids=()
   chunk=$(( (size + n - 1) / n ))
   for ((i = 0; i < n; i++)); do
     start=$(( i * chunk )); end=$(( start + chunk - 1 )); [ "$end" -ge "$size" ] && end=$(( size - 1 ))
@@ -238,10 +239,19 @@ models() {  # models org/name:file.gguf [org/name:a.gguf+b.gguf ...]
     # ModelScope is the default (Hugging Face was throttled on earlier hosts), but some hosts get ~10-50 KB/s from it:
     # probe both on the first file and take Hugging Face when it is 1.5x faster
     local base_ms="https://modelscope.cn/models/$model/resolve/master" base_hf="https://huggingface.co/$model/resolve/main"
+    # TAXAMETER_MODEL_SOURCE=modelscope|huggingface skips the probe (a single-connection probe can pick the mirror
+    # that is slower under parallel load)
     local big="${files%% *}" sp_ms sp_hf base="$base_ms"
-    sp_ms=$(probe_speed "$base_ms/$big"); sp_hf=$(probe_speed "$base_hf/$big")
-    if [ $(( ${sp_hf:-0} * 2 )) -gt $(( ${sp_ms:-0} * 3 )) ]; then base="$base_hf"; fi
-    echo "source $model: $base (modelscope $(( ${sp_ms:-0} / 1024 )) KB/s, huggingface $(( ${sp_hf:-0} / 1024 )) KB/s)"
+    case "${TAXAMETER_MODEL_SOURCE:-}" in
+      modelscope) echo "source $model: $base (TAXAMETER_MODEL_SOURCE)" ;;
+      huggingface) base="$base_hf"; echo "source $model: $base (TAXAMETER_MODEL_SOURCE)" ;;
+      *)
+        sp_ms=$(probe_speed "$base_ms/$big"); sp_hf=$(probe_speed "$base_hf/$big")
+        if [ $(( ${sp_hf:-0} * 2 )) -gt $(( ${sp_ms:-0} * 3 )) ]; then base="$base_hf"; fi
+        echo "source $model: $base (modelscope $(( ${sp_ms:-0} / 1024 )) KB/s, huggingface $(( ${sp_hf:-0} / 1024 )) KB/s)"
+        ;;
+    esac
+    echo "connections per file: ${TAXAMETER_PFETCH_N:-16}"
     for file in $files; do
       local url="$base/$file" want have
       mkdir -p "$(dirname "$dir/$file")"  # specs like org/x:1_Pooling/config.json

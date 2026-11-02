@@ -117,6 +117,25 @@ def test_count_procs_empty_is_zero():
 
 
 @needs_bash
+def test_pfetch_connections_from_env(tmp_path):
+    # curl stub: writes its byte range into the part file, so the parts and their order are visible in the result
+    box = _script("box.sh")
+    out = (tmp_path / "f").as_posix()
+    stub = (
+        "curl() { local r o; while [ $# -gt 0 ]; do"
+        ' case $1 in -r) r=$2; shift;; -o) o=$2; shift;; esac; shift; done; echo "$r" > "$o"; }'
+    )
+    r = subprocess.run(
+        [BASH, "-c", f'. "{box.as_posix()}"; {stub}; TAXAMETER_PFETCH_N=4 pfetch http://x "{out}" 100; cat "{out}"'],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": "/usr/bin:/bin", "TAXAMETER_HOME": box.parent.as_posix()},
+    )
+    assert r.stdout.split() == ["0-24", "25-49", "50-74", "75-99"], r.stderr
+
+
+@needs_bash
 def test_pack_results_selection(tmp_path):
     proj = tmp_path / "proj"
     for rel in [
