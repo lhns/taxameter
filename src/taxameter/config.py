@@ -87,6 +87,10 @@ class Offers:
     min_cuda: float = 0  # highest CUDA the host driver must support; 0: from the image name (cuda:12.8...), else 12.8
     interruptible: bool = False
     max_ram_gb: float = 0  # drop offers whose host RAM exceeds this (or is unknown); 0: no limit
+    min_cpu_cores: float = 0  # drop offers with fewer usable CPU cores (cpu_cores_effective); 0: no limit
+    max_inet_down_cost: float = 0  # drop offers billing more USD/GB downloaded (or unknown); 0: no limit
+    expected_download_gb: float = 0  # traffic one box is expected to download; priced into score and shown price
+    expected_box_hours: float = 0  # hours that traffic is spread over; 0: [policy] max_box_hours
 
 
 @dataclass

@@ -35,7 +35,20 @@ def make_instance(iid=100, status="running", port=41022, host_id=555, runtype="s
     }  # fmt: skip
 
 
-def offer(oid, host, price, score, rel=0.995, verified=None, verification="verified", ports=10, vram=24564, ram=None):
+def offer(
+    oid,
+    host,
+    price,
+    score,
+    rel=0.995,
+    verified=None,
+    verification="verified",
+    ports=10,
+    vram=24564,
+    ram=None,
+    cores=None,
+    down_cost=None,
+):
     row = {
         "id": oid, "host_id": host, "machine_id": host + 1, "gpu_name": "RTX 3090", "gpu_ram": vram,
         "dph_total": price, "dlperf_per_dphtotal": score, "reliability2": rel, "verified": verified,
@@ -44,6 +57,10 @@ def offer(oid, host, price, score, rel=0.995, verified=None, verification="verif
     }  # fmt: skip
     if ram is not None:
         row["cpu_ram"] = ram  # MB, as Vast reports it
+    if cores is not None:
+        row["cpu_cores_effective"] = cores
+    if down_cost is not None:
+        row["inet_down_cost"] = down_cost  # USD per GB
     return row
 
 
