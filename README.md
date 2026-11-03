@@ -38,6 +38,11 @@ min_cuda = 12.8            # optional: lowest host-driver CUDA to accept; defaul
                            # name/tag (cuda-12.8.1 -> 12.8), else 12.8
 max_ram_gb = 64            # optional: drop offers whose host RAM exceeds this (or is unknown), e.g. so a model
                            # does not fit in page cache for benchmarks; default: no limit
+min_cpu_cores = 8          # optional: drop offers with fewer usable CPU cores (cpu_cores_effective); default: no limit
+max_inet_down_cost = 0.02  # optional: drop offers billing more than this USD/GB downloaded; default: no limit
+expected_download_gb = 120 # optional: price this much download into score and shown price (default 0, ADR 0010):
+                           # effective USD/h = dph_total + inet_down_cost * GB / expected_box_hours (default
+                           # max_box_hours). Price caps still apply to dph_total only
 
 [policy]
 max_box_hours = 12         # required, no default: a managed box running longer is stopped
@@ -55,6 +60,7 @@ T="uv run taxameter"
 $T balance                   # credit, spend rate, runway
 $T offers                    # ranked offers under the price cap; the last-good host comes first
 $T create --auto             # rent the best offer (falls through to the next if it was just taken)
+$T offers --min-cpu-cores 8 --download-gb 120   # per-run overrides of the two [offers] settings above
 $T provision                 # push committed HEAD, run the provision hook, models, on-box autostop
 $T run scripts/job.sh        # start a repo script detached on the box
 $T ssh --timeout 540 -- 'for i in $(seq 100); do grep -q ^DONE /root/proj/runs/job.log && break; sleep 5; done'
@@ -63,6 +69,8 @@ $T destroy --yes             # refuses while results are unfetched
 $T nightly                   # all of the above: create, provision, run, wait, fetch, destroy
 $T watchdog --dry-run        # what the cost-control loop would do
 ```
+
+`status` also shows per box the cores, the download price, the download GB billed so far and its cost (and the accumulated cost when the API gives it).
 
 Several boxes at once (`max_instances` above 1, ADR 0009): each agent drives its own box with its own process. Always pass `--id` (`$T run --id 123 ...`); without it a command uses the default `current` box, which `create` and `adopt` set only when none is set. `create` prints the new id (`--json` has `id` and `current`). State updates are locked, so parallel processes do not lose each other's changes; batches are tracked per box. `status` and `watchdog` cover all of the project's boxes.
 

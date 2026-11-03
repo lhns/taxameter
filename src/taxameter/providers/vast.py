@@ -149,9 +149,17 @@ def _host(row: dict) -> str | None:
     return str(row["host_id"]) if row.get("host_id") is not None else None
 
 
+def _num(v: Any) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def instance_from_row(row: dict) -> Instance:
     status = _STATUS.get(str(row.get("actual_status") or "").lower(), "loading")  # unknown counts toward the cap
     started = row.get("start_date")
+    billed = _num(row.get("inet_down_billed"))
     return Instance(
         id=str(row["id"]),
         status=status,
@@ -163,11 +171,15 @@ def instance_from_row(row: dict) -> Instance:
         label=row.get("label") or "",
         endpoints=endpoints_from_instance(row),
         raw=row,
+        cpu_cores=_num(row.get("cpu_cores_effective")) or 0.0,
+        inet_down_cost=_num(row.get("inet_down_cost")),
+        inet_down_billed_gb=None if billed is None else billed / 1e9,  # Vast reports bytes
+        total_cost=_num(row.get("total_cost")),
     )
 
 
 def build_offer_query(q: OfferQuery) -> dict:
-    return {
+    query = {
         "verified": {"eq": True},
         "external": {"eq": False},
         "rentable": {"eq": True},
@@ -185,6 +197,11 @@ def build_offer_query(q: OfferQuery) -> dict:
         "limit": q.limit,
         "allocated_storage": q.min_disk_gb,
     }
+    if q.min_cpu_cores:
+        query["cpu_cores_effective"] = {"gte": q.min_cpu_cores}
+    if q.max_inet_down_cost:
+        query["inet_down_cost"] = {"lte": q.max_inet_down_cost}
+    return query
 
 
 def offer_score(o: dict) -> float:
@@ -207,6 +224,8 @@ def offer_from_row(o: dict) -> Offer:
         location=str(o.get("geolocation") or "?"),
         raw=o,
         ram_gb=float(o.get("cpu_ram") or 0) / 1024,  # MB
+        cpu_cores=_num(o.get("cpu_cores_effective")) or 0.0,
+        inet_down_cost=_num(o.get("inet_down_cost")),
     )
 
 
@@ -219,7 +238,12 @@ def usable(o: dict, q: OfferQuery) -> bool:
         return False
     if float(o.get("reliability2") or o.get("reliability") or 0) < q.min_reliability:
         return False
-    return float(o.get("gpu_ram") or 0) >= q.min_vram_gb * 950
+    if float(o.get("gpu_ram") or 0) < q.min_vram_gb * 950:
+        return False
+    if q.min_cpu_cores and (_num(o.get("cpu_cores_effective")) or 0) < q.min_cpu_cores:  # also a server filter
+        return False
+    cost = _num(o.get("inet_down_cost"))
+    return not (q.max_inet_down_cost and (cost is None or cost > q.max_inet_down_cost))
 
 
 def _gone(text: str) -> bool:

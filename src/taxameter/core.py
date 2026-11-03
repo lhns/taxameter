@@ -648,10 +648,15 @@ def filter_rank_offers(
     sort: str = "score",
     prefer_host: str | None = None,
     max_ram_gb: float = 0,
+    download_gb: float = 0,
+    box_hours: float = 0,
 ) -> list[Offer]:
     """Drop blocklisted hosts and over-price offers; rank by throughput per dollar (or by price), then move
     offers of `prefer_host` (the last host that delivered a verified run) to the front. The blocklist always wins.
-    Provider-specific filtering (verified machines, ports, ...) has already happened inside the provider."""
+    Provider-specific filtering (verified machines, ports, ...) has already happened inside the provider.
+    With `download_gb` and `box_hours` (ADR 0010) an offer with a known download price gets the traffic spread over
+    the box hours added to its effective price; score is scaled by price / effective price and the price rank and
+    price sort use the effective price. `max_price` still applies to the hourly price alone."""
     keep = []
     for o in offers:
         if o.host_id is not None and str(o.host_id) in blocklist:
@@ -660,12 +665,21 @@ def filter_rank_offers(
             continue
         if max_ram_gb and (o.ram_gb or 1e9) > max_ram_gb:  # unknown RAM cannot be shown to fit
             continue
+        if download_gb and box_hours and o.inet_down_cost and o.price_per_h:
+            traffic = o.inet_down_cost * download_gb / box_hours
+            eff = o.price_per_h + traffic
+            o = replace(
+                o, traffic_per_h=traffic, effective_price_per_h=eff, score=round(o.score * o.price_per_h / eff, 1)
+            )
         keep.append(o)
-    by_price = sorted(keep, key=lambda o: o.price_per_h or 1e9)
-    ranks = {id(o): i for i, o in enumerate(by_price, 1)}
+
+    def eff_price(o: Offer) -> float:
+        return o.effective_price_per_h or 1e9
+
+    ranks = {id(o): i for i, o in enumerate(sorted(keep, key=eff_price), 1)}
     keep = [replace(o, price_rank=ranks[id(o)]) for o in keep]
-    by_price = sorted(keep, key=lambda o: o.price_per_h or 1e9)
-    ranked = by_price if sort == "price" else sorted(keep, key=lambda o: (-o.score, o.price_per_h or 1e9))
+    by_price = sorted(keep, key=eff_price)
+    ranked = by_price if sort == "price" else sorted(keep, key=lambda o: (-o.score, eff_price(o)))
     if prefer_host:
         ranked = sorted(ranked, key=lambda o: str(o.host_id) != str(prefer_host))  # stable
     return ranked
@@ -690,6 +704,8 @@ def search_offers(
         min_inet_mbps=float(g("min_inet", off.min_inet_mbps)),
         min_cuda=float(g("min_cuda", ctx.cfg.min_cuda())),
         interruptible=bool(g("interruptible", off.interruptible)),
+        min_cpu_cores=float(g("min_cpu_cores", off.min_cpu_cores)),
+        max_inet_down_cost=float(off.max_inet_down_cost),
     )
     block = ctx.store.blocklist() | set(extra_block or set())
     block |= {h.strip() for h in (g("exclude_hosts", "") or "").split(",") if h.strip()}
@@ -701,13 +717,39 @@ def search_offers(
         g("sort", "score"),
         prefer_host=ctx.store.state.get("last_good_host"),
         max_ram_gb=off.max_ram_gb,
+        download_gb=float(g("download_gb", off.expected_download_gb)),
+        box_hours=float(off.expected_box_hours or ctx.policy["max_box_hours"]),
     )
 
 
+def billed_download_cost(i: Instance) -> float | None:
+    if i.inet_down_billed_gb is None or i.inet_down_cost is None:
+        return None
+    return i.inet_down_billed_gb * i.inet_down_cost
+
+
+def instance_cost_line(i: Instance) -> str:
+    """Cores, download price, traffic billed so far and its cost, accumulated cost when the API reports it."""
+    cost = billed_download_cost(i)
+    parts = [
+        f"{i.cpu_cores:g} cores",
+        "down $?/GB" if i.inet_down_cost is None else f"down ${i.inet_down_cost:.3f}/GB",
+        "billed ? GB" if i.inet_down_billed_gb is None else f"billed {i.inet_down_billed_gb:.1f} GB",
+    ]
+    if cost is not None:
+        parts[-1] += f" (${cost:.2f})"
+    if i.total_cost is not None:
+        parts.append(f"total ${i.total_cost:.2f}")
+    return "  ".join(parts)
+
+
 def offer_line(o: Offer) -> str:
+    cost = "?" if o.inet_down_cost is None else f"{o.inet_down_cost:.3f}"
+    traffic = f" +${o.traffic_per_h:.3f}/h traffic" if o.traffic_per_h else ""
     return (
-        f"offer {o.id:>9}  {o.gpu_name:<10} {o.vram_gb:4.0f}GB  ${o.price_per_h:.3f}/h (#{o.price_rank})  "
-        f"score {o.score:>6}  rel {o.reliability:.4f}  host {o.host_id}  {o.location[:22]:<22}"
+        f"offer {o.id:>9}  {o.gpu_name:<10} {o.vram_gb:4.0f}GB  ${o.price_per_h:.3f}/h{traffic} (#{o.price_rank})  "
+        f"{o.cpu_cores:g} cores  down ${cost}/GB  score {o.score:>6}  rel {o.reliability:.4f}  host {o.host_id}  "
+        f"{o.location[:22]:<22}"
     )
 
 

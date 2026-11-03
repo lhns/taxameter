@@ -51,7 +51,10 @@ def cmd_offers(ctx: Ctx, a: argparse.Namespace) -> dict:
     )
     for o in offers[: a.top]:
         say(core.offer_line(o))
-    keys = ("id", "gpu_name", "vram_gb", "price_per_h", "price_rank", "score", "reliability", "host_id", "location")
+    keys = (
+        "id", "gpu_name", "vram_gb", "price_per_h", "price_rank", "score", "reliability", "host_id", "location",
+        "cpu_cores", "inet_down_cost", "traffic_per_h", "effective_price_per_h",
+    )  # fmt: skip
     return {"offers": [{k: getattr(o, k) for k in keys} for o in offers[: a.top]]}
 
 
@@ -249,11 +252,17 @@ def cmd_status(ctx: Ctx, a: argparse.Namespace) -> dict:
                 f"  host {i.host_id}  label {i.label}  "
                 f"{'managed:' + rec.get('role', '?') if rec else 'unmanaged'}"
             )
+            say("  " + core.instance_cost_line(i))
         for i in insts:
             if i.id in st.state["instances"] and i.status in core.UP_STATUSES:
                 core.age_notice(ctx, i.id, i)
         res["instances"] = [
-            {k: getattr(i, k) for k in ("id", "status", "gpu_name", "price_per_h", "host_id", "label")} for i in insts
+            {
+                **{k: getattr(i, k) for k in ("id", "status", "gpu_name", "price_per_h", "host_id", "label")},
+                **{k: getattr(i, k) for k in ("cpu_cores", "inet_down_cost", "inet_down_billed_gb", "total_cost")},
+                "inet_down_billed_cost": core.billed_download_cost(i),
+            }
+            for i in insts
         ]
     except ProviderError as e:
         say(f"API unavailable: {e}")
@@ -366,6 +375,10 @@ def build_parser() -> argparse.ArgumentParser:
         s.add_argument("--min-inet", type=float)
         s.add_argument("--min-disk", type=float)
         s.add_argument("--min-cuda", type=float, help="default: [offers] min_cuda, else from the image name")
+        s.add_argument("--min-cpu-cores", type=float, help="usable CPU cores (default [offers] min_cpu_cores)")
+        s.add_argument(
+            "--download-gb", type=float, help="expected download in GB, priced into score (default [offers])"
+        )
         s.add_argument("--exclude-hosts", default="", help="extra host ids to skip (comma list)")
         s.add_argument("--interruptible", action="store_true", default=None)
         s.add_argument("--sort", choices=["score", "price"], default="score")

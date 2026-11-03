@@ -50,7 +50,15 @@ class Offer:
     location: str
     raw: dict[str, Any] = field(default_factory=dict)
     ram_gb: float = 0.0  # host RAM; 0 when the provider does not report it
+    cpu_cores: float = 0.0  # usable CPU cores; 0 when unknown
+    inet_down_cost: float | None = None  # USD per GB downloaded; None when unknown
     price_rank: int = 0  # set by the core's ranking
+    traffic_per_h: float = 0.0  # expected download cost per box hour (set by the core, ADR 0010)
+    effective_price_per_h: float = 0.0  # price_per_h + traffic_per_h; informational, caps use price_per_h
+
+    def __post_init__(self) -> None:
+        if not self.effective_price_per_h:
+            self.effective_price_per_h = self.price_per_h
 
 
 @dataclass
@@ -65,6 +73,10 @@ class Instance:
     label: str
     endpoints: list[Endpoint] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+    cpu_cores: float = 0.0  # usable CPU cores; 0 when unknown
+    inet_down_cost: float | None = None  # USD per GB downloaded; None when unknown
+    inet_down_billed_gb: float | None = None  # traffic billed so far
+    total_cost: float | None = None  # accumulated cost if the provider reports it
 
 
 @dataclass
@@ -77,6 +89,8 @@ class OfferQuery:
     min_cuda: float
     interruptible: bool = False
     limit: int = 100
+    min_cpu_cores: float = 0  # 0: no filter
+    max_inet_down_cost: float = 0  # USD per GB; 0: no filter
 
 
 @dataclass
