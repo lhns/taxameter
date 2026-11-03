@@ -14,6 +14,19 @@ SCRIPTS = ("box.sh", "idle_autostop.sh", "cuda_env.sh", "pack_results.sh")
 ONSTART = f"[ -f {BOX_HOME}/box.sh ] && bash {BOX_HOME}/box.sh ensure-watchdog >> /root/autostop.log 2>&1 || true"
 
 
+def onstart(pubkey: str | None) -> str:
+    """ONSTART, preceded by adding `pubkey` to root's authorized_keys when given: some Vast hosts started boxes
+    whose sshd rejected the account key ("Permission denied (publickey)", four hosts on 2026-11-03)."""
+    if not pubkey:
+        return ONSTART
+    k = shlex.quote(pubkey.strip())
+    auth = "/root/.ssh/authorized_keys"
+    return (
+        f"mkdir -p /root/.ssh && chmod 700 /root/.ssh && "
+        f"{{ grep -qxF {k} {auth} 2>/dev/null || echo {k} >> {auth}; }} && chmod 600 {auth}; {ONSTART}"
+    )
+
+
 def _words(name: str, items: list[str]) -> str:
     """Space-joined list for the env file; the box splits it on whitespace, so an entry cannot contain one."""
     for item in items:
