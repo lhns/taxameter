@@ -761,7 +761,9 @@ def create_instance(
 ) -> str:
     st = ctx.store
     image = image or ctx.cfg.image_ref()
-    spec = CreateSpec(image, ctx.policy["disk_gb"], ctx.cfg.project.name, boxenv.ONSTART, interruptible)
+    pub = ctx.ssh_key.with_name(ctx.ssh_key.name + ".pub")
+    pubkey = pub.read_text(encoding="utf-8") if pub.is_file() else None
+    spec = CreateSpec(image, ctx.policy["disk_gb"], ctx.cfg.project.name, boxenv.onstart(pubkey), interruptible)
     iid = ctx.provider.create(offer, spec)
     with st.update():
         st.rec(iid, create=True).update(

@@ -187,3 +187,13 @@ def test_progress_log_depth(tmp_path, depth, found):
         },
     )
     assert bool(r.stdout.strip()) is found, r.stderr
+
+
+def test_onstart_adds_the_public_key_once(tmp_path):
+    assert boxenv.onstart(None) == boxenv.ONSTART
+    cmd = boxenv.onstart("ssh-ed25519 AAAAC3Nza me@host\n")
+    assert cmd.endswith(boxenv.ONSTART) and "'ssh-ed25519 AAAAC3Nza me@host'" in cmd
+    script = cmd.removesuffix(boxenv.ONSTART).replace("/root/", f"{tmp_path.as_posix()}/")
+    for _ in range(2):  # every container start runs it
+        subprocess.run([BASH, "-c", script + "true"], check=True, timeout=20)
+    assert (tmp_path / ".ssh" / "authorized_keys").read_text().splitlines() == ["ssh-ed25519 AAAAC3Nza me@host"]
