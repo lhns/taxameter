@@ -110,9 +110,9 @@ def test_create_accepts_overrides(env):
 
 def test_instance_maps_cost_fields():
     row = {"id": 5, "actual_status": "running", "cpu_cores_effective": 11.5, "inet_down_cost": 0.02,
-           "inet_down_billed": 150e9, "total_cost": 3.2}  # fmt: skip
+           "inet_down_billed": 150e6}  # fmt: skip
     i = instance_from_row(row)
-    assert (i.cpu_cores, i.inet_down_cost, i.inet_down_billed_gb, i.total_cost) == (11.5, 0.02, 150.0, 3.2)
+    assert (i.cpu_cores, i.inet_down_cost, i.inet_down_billed_gb) == (11.5, 0.02, 150.0)
     assert vc.billed_download_cost(i) == 3.0
     assert "11.5 cores" in vc.instance_cost_line(i) and "billed 150.0 GB ($3.00)" in vc.instance_cost_line(i)
     bare = instance_from_row({"id": 6, "actual_status": "running"})
@@ -122,10 +122,10 @@ def test_instance_maps_cost_fields():
 def test_status_shows_cost_fields(env, capsys):
     ctx, fake, _ = env
     manage(ctx, fake)
-    fake.instances[100].update(cpu_cores_effective=9, inet_down_cost=0.02, inet_down_billed=100e9, total_cost=1.5)
+    fake.instances[100].update(cpu_cores_effective=9, inet_down_cost=0.02, inet_down_billed=100e6)
     assert cli.main(["status"], ctx) == 0
     out = capsys.readouterr().out
-    assert "9 cores" in out and "down $0.020/GB" in out and "billed 100.0 GB ($2.00)" in out and "total $1.50" in out
+    assert "9 cores" in out and "down $0.020/GB" in out and "billed 100.0 GB ($2.00)" in out
     assert cli.main(["--json", "status"], ctx) == 0
     inst = json.loads(capsys.readouterr().out)["instances"][0]
     assert inst["cpu_cores"] == 9 and inst["inet_down_billed_gb"] == 100 and inst["inet_down_billed_cost"] == 2.0

@@ -76,7 +76,6 @@ class Instance:
     cpu_cores: float = 0.0  # usable CPU cores; 0 when unknown
     inet_down_cost: float | None = None  # USD per GB downloaded; None when unknown
     inet_down_billed_gb: float | None = None  # traffic billed so far
-    total_cost: float | None = None  # accumulated cost if the provider reports it
 
 
 @dataclass

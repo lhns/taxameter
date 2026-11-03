@@ -12,11 +12,11 @@ Vast bills internet traffic per GB (`inet_down_cost`, 0.013 to 0.026 USD/GB seen
 2. **Effective price**: `expected_download_gb` (default 0) and `expected_box_hours` (default 0 = `[policy] max_box_hours`), both in `[offers]`. Per offer: `traffic_per_h = inet_down_cost * expected_download_gb / expected_box_hours` and `effective_price = price_per_h + traffic_per_h`. The score is multiplied by `price_per_h / effective_price` (the provider score is throughput per dollar, so this prices the traffic in). Price rank and `--sort price` use the effective price. Offers with unknown download price get no traffic cost.
 3. **Caps unchanged**: `max_price_per_hour`, `max_account_price_per_hour`, the runway check and instance accounting use `price_per_h` (dph_total) only. They are hourly money caps.
 4. **CLI**: `offers` and `create` take `--min-cpu-cores` and `--download-gb` (override the config; `--download-gb 0` turns pricing off). `offers` shows cores, download price and traffic per hour; `--json` adds `cpu_cores`, `inet_down_cost`, `traffic_per_h`, `effective_price_per_h`.
-5. **`status`** prints per instance cores, download price, billed download GB and its cost (`inet_down_billed` bytes times `inet_down_cost`), and `total_cost` when the API row has it; `--json` carries the same fields.
-6. `Offer` and `Instance` gain `cpu_cores`, `inet_down_cost` (and on `Instance` `inet_down_billed_gb`, `total_cost`); `OfferQuery` gains `min_cpu_cores`, `max_inet_down_cost`. Providers that do not know a value leave 0 or None.
+5. **`status`** prints per instance cores, download price, billed download GB and its cost (`inet_down_billed`, which Vast reports in kB, times `inet_down_cost`); `--json` carries the same fields.
+6. `Offer` and `Instance` gain `cpu_cores`, `inet_down_cost` (and on `Instance` `inet_down_billed_gb`); `OfferQuery` gains `min_cpu_cores`, `max_inet_down_cost`. Providers that do not know a value leave 0 or None.
 
 ## Consequences
 
 - With the default config nothing changes except the extra columns.
 - The effective price is a ranking aid, not a cap: an offer can pass `max_price_per_hour` and still cost more per hour once traffic is included. Use `max_inet_down_cost` to bound it.
-- `inet_down_billed` is read as bytes and `total_cost` as a field name taken from the instance row; neither is confirmed against the live API. A missing field shows as `?`.
+- `inet_down_billed` is in kB (checked 2026-11-03: a box with 149 GB of models on disk showed 171966464, the rest being the image and other downloads). Vast's instance row has no accumulated-cost field. A missing field shows as `?`.

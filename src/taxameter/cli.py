@@ -259,7 +259,7 @@ def cmd_status(ctx: Ctx, a: argparse.Namespace) -> dict:
         res["instances"] = [
             {
                 **{k: getattr(i, k) for k in ("id", "status", "gpu_name", "price_per_h", "host_id", "label")},
-                **{k: getattr(i, k) for k in ("cpu_cores", "inet_down_cost", "inet_down_billed_gb", "total_cost")},
+                **{k: getattr(i, k) for k in ("cpu_cores", "inet_down_cost", "inet_down_billed_gb")},
                 "inet_down_billed_cost": core.billed_download_cost(i),
             }
             for i in insts

@@ -173,8 +173,8 @@ def instance_from_row(row: dict) -> Instance:
         raw=row,
         cpu_cores=_num(row.get("cpu_cores_effective")) or 0.0,
         inet_down_cost=_num(row.get("inet_down_cost")),
-        inet_down_billed_gb=None if billed is None else billed / 1e9,  # Vast reports bytes
-        total_cost=_num(row.get("total_cost")),
+        # Vast reports kB: a box with 149 GB of models on disk showed 171966464 (2026-11-03)
+        inet_down_billed_gb=None if billed is None else billed / 1e6,
     )
 
 

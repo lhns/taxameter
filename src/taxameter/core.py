@@ -729,7 +729,7 @@ def billed_download_cost(i: Instance) -> float | None:
 
 
 def instance_cost_line(i: Instance) -> str:
-    """Cores, download price, traffic billed so far and its cost, accumulated cost when the API reports it."""
+    """Cores, download price, traffic billed so far and its cost."""
     cost = billed_download_cost(i)
     parts = [
         f"{i.cpu_cores:g} cores",
@@ -738,8 +738,6 @@ def instance_cost_line(i: Instance) -> str:
     ]
     if cost is not None:
         parts[-1] += f" (${cost:.2f})"
-    if i.total_cost is not None:
-        parts.append(f"total ${i.total_cost:.2f}")
     return "  ".join(parts)
 
 

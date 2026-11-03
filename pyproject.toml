@@ -1,6 +1,6 @@
 [project]
 name = "taxameter"
-version = "0.3.0"
+version = "0.3.1"
 description = "Guard layer for rented GPU boxes: money caps, watchdog, host blocklist, push-run-fetch-destroy."
 readme = "README.md"
 license = "Apache-2.0"
