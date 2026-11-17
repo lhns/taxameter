@@ -685,6 +685,15 @@ def filter_rank_offers(
     return ranked
 
 
+def requested_num_gpus(ctx: Ctx, a: argparse.Namespace | None = None) -> int:
+    """--num-gpus, else [offers] num_gpus (default 1)."""
+    n = getattr(a, "num_gpus", None) if a is not None else None
+    n = ctx.cfg.offers.num_gpus if n is None else n
+    if n < 1:
+        raise ConfigError(f"num_gpus must be >= 1, got {n}")
+    return int(n)
+
+
 def search_offers(
     ctx: Ctx, a: argparse.Namespace | None = None, extra_block: set[str] | None = None, max_price: float | None = None
 ) -> list[Offer]:
@@ -706,6 +715,7 @@ def search_offers(
         interruptible=bool(g("interruptible", off.interruptible)),
         min_cpu_cores=float(g("min_cpu_cores", off.min_cpu_cores)),
         max_inet_down_cost=float(off.max_inet_down_cost),
+        num_gpus=requested_num_gpus(ctx, a),
     )
     block = ctx.store.blocklist() | set(extra_block or set())
     block |= {h.strip() for h in (g("exclude_hosts", "") or "").split(",") if h.strip()}
@@ -745,9 +755,10 @@ def offer_line(o: Offer) -> str:
     cost = "?" if o.inet_down_cost is None else f"{o.inet_down_cost:.3f}"
     traffic = f" +${o.traffic_per_h:.3f}/h traffic" if o.traffic_per_h else ""
     return (
-        f"offer {o.id:>9}  {o.gpu_name:<10} {o.vram_gb:4.0f}GB  ${o.price_per_h:.3f}/h{traffic} (#{o.price_rank})  "
-        f"{o.cpu_cores:g} cores  down ${cost}/GB  score {o.score:>6}  rel {o.reliability:.4f}  host {o.host_id}  "
-        f"{o.location[:22]:<22}"
+        f"offer {o.id:>9}  {o.num_gpus}x {o.gpu_name:<10} {o.vram_gb:4.0f}GB  "
+        f"${o.price_per_h:.3f}/h{traffic} (#{o.price_rank})  "
+        f"{o.cpu_cores:g} cores  down ${cost}/GB  score {o.score:>6}  rel {o.reliability:.4f}  "
+        f"host {o.host_id}  {o.location[:22]:<22}"
     )
 
 
@@ -881,6 +892,7 @@ def _rent(
     only_offer: str | None = None,
     max_price: float | None = None,
     announce: str = "renting ",
+    num_gpus: int | None = None,
 ) -> tuple[str, Offer]:
     """The one place that rents (under the rent lock). (1) Per-project cap. (2) Try the ranked offers in order, at
     most rent_attempts: per offer the account price ceiling and the runway check, then create. OfferGone (taken
@@ -892,10 +904,19 @@ def _rent(
     insts = [] if allow_second else check_cap(ctx, overlap_with)
     offers = search()
     if only_offer:  # an explicit choice never falls through to another offer
-        offers = [o for o in offers if o.id == str(only_offer)]
-        if not offers:
+        picked = [o for o in offers if o.id == str(only_offer)]
+        wrong = [o for o in picked if num_gpus is not None and o.num_gpus != num_gpus]
+        if wrong:
             raise RentRefused(
-                f"offer {only_offer} is not among the filtered offers (blocklisted/over price/gone?)", retry_later=False
+                f"offer {only_offer} has {wrong[0].num_gpus} GPU(s), {num_gpus} requested (--num-gpus)",
+                retry_later=False,
+            )
+        offers = picked
+        if not offers:
+            gpus = f", or has a GPU count other than {num_gpus}" if num_gpus is not None else ""
+            raise RentRefused(
+                f"offer {only_offer} is not among the filtered offers (blocklisted/over price/gone{gpus}?)",
+                retry_later=False,
             )
     elif not offers:
         raise RentRefused(f"no offers match under ${max_price}/h" if max_price is not None else "no offers match")

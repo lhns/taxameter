@@ -54,6 +54,7 @@ class Offer:
     inet_down_cost: float | None = None  # USD per GB downloaded; None when unknown
     price_rank: int = 0  # set by the core's ranking
     traffic_per_h: float = 0.0  # expected download cost per box hour (set by the core, ADR 0010)
+    num_gpus: int = 1  # GPUs in the box; price_per_h is for all of them
     effective_price_per_h: float = 0.0  # price_per_h + traffic_per_h; informational, caps use price_per_h
 
     def __post_init__(self) -> None:
@@ -76,6 +77,7 @@ class Instance:
     cpu_cores: float = 0.0  # usable CPU cores; 0 when unknown
     inet_down_cost: float | None = None  # USD per GB downloaded; None when unknown
     inet_down_billed_gb: float | None = None  # traffic billed so far
+    num_gpus: int = 1
 
 
 @dataclass
@@ -90,6 +92,7 @@ class OfferQuery:
     limit: int = 100
     min_cpu_cores: float = 0  # 0: no filter
     max_inet_down_cost: float = 0  # USD per GB; 0: no filter
+    num_gpus: int = 1  # exact GPU count of the box (ADR 0011)
 
 
 @dataclass

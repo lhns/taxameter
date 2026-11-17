@@ -48,6 +48,7 @@ def offer(
     ram=None,
     cores=None,
     down_cost=None,
+    num_gpus=None,
 ):
     row = {
         "id": oid, "host_id": host, "machine_id": host + 1, "gpu_name": "RTX 3090", "gpu_ram": vram,
@@ -57,6 +58,8 @@ def offer(
     }  # fmt: skip
     if ram is not None:
         row["cpu_ram"] = ram  # MB, as Vast reports it
+    if num_gpus is not None:
+        row["num_gpus"] = num_gpus
     if cores is not None:
         row["cpu_cores_effective"] = cores
     if down_cost is not None:

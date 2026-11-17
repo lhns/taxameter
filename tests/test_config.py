@@ -207,3 +207,8 @@ def test_unknown_provider_is_a_clear_error(tmp_path, capsys):
     )
     assert cli.main(["--config", str(path), "balance"]) == 1
     assert "unknown provider 'lambda'" in capsys.readouterr().out
+
+
+def test_offers_num_gpus_defaults_to_one_and_is_configurable(tmp_path):
+    assert config.load(project(tmp_path)).offers.num_gpus == 1
+    assert config.load(project(tmp_path, extra="[offers]\nnum_gpus = 4\n")).offers.num_gpus == 4

@@ -52,8 +52,8 @@ def cmd_offers(ctx: Ctx, a: argparse.Namespace) -> dict:
     for o in offers[: a.top]:
         say(core.offer_line(o))
     keys = (
-        "id", "gpu_name", "vram_gb", "price_per_h", "price_rank", "score", "reliability", "host_id", "location",
-        "cpu_cores", "inet_down_cost", "traffic_per_h", "effective_price_per_h",
+        "id", "gpu_name", "num_gpus", "vram_gb", "price_per_h", "price_rank", "score", "reliability", "host_id",
+        "location", "cpu_cores", "inet_down_cost", "traffic_per_h", "effective_price_per_h",
     )  # fmt: skip
     return {"offers": [{k: getattr(o, k) for k in keys} for o in offers[: a.top]]}
 
@@ -70,6 +70,7 @@ def cmd_create(ctx: Ctx, a: argparse.Namespace) -> dict:
         allow_second=a.allow_second,
         only_offer=a.offer,
         max_price=max_price,
+        num_gpus=core.requested_num_gpus(ctx, a),
     )
     ep = core.wait_ready(ctx, iid, ctx.policy["create_wait_min"])
     return {"id": iid, "endpoint": str(ep) if ep else None, "current": ctx.store.state.get("current")}
@@ -248,7 +249,7 @@ def cmd_status(ctx: Ctx, a: argparse.Namespace) -> dict:
         for i in insts:
             rec = st.state["instances"].get(i.id)
             say(
-                f"instance {i.id}  {i.status:<8} {i.gpu_name}  ${i.price_per_h:.3f}/h"
+                f"instance {i.id}  {i.status:<8} {i.num_gpus}x {i.gpu_name}  ${i.price_per_h:.3f}/h"
                 f"  host {i.host_id}  label {i.label}  "
                 f"{'managed:' + rec.get('role', '?') if rec else 'unmanaged'}"
             )
@@ -258,7 +259,10 @@ def cmd_status(ctx: Ctx, a: argparse.Namespace) -> dict:
                 core.age_notice(ctx, i.id, i)
         res["instances"] = [
             {
-                **{k: getattr(i, k) for k in ("id", "status", "gpu_name", "price_per_h", "host_id", "label")},
+                **{
+                    k: getattr(i, k)
+                    for k in ("id", "status", "gpu_name", "num_gpus", "price_per_h", "host_id", "label")
+                },
                 **{k: getattr(i, k) for k in ("cpu_cores", "inet_down_cost", "inet_down_billed_gb")},
                 "inet_down_billed_cost": core.billed_download_cost(i),
             }
@@ -369,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("offers", "create"):
         s = sub.add_parser(name, parents=[common], help="search offers" if name == "offers" else "rent + wait")
         s.add_argument("--gpu", help="comma list (default [offers] gpus)")
+        s.add_argument("--num-gpus", type=int, help="exact GPUs per box (default [offers] num_gpus, else 1)")
         s.add_argument("--min-vram", type=float)
         s.add_argument("--max-price", type=float)
         s.add_argument("--min-reliability", type=float)

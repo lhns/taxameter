@@ -36,6 +36,8 @@ tag = "cuda-12.8.1-auto"
 [offers]
 min_cuda = 12.8            # optional: lowest host-driver CUDA to accept; default: the CUDA version in the image
                            # name/tag (cuda-12.8.1 -> 12.8), else 12.8
+num_gpus = 1              # optional: exact GPUs per box (Vast num_gpus eq N); default 1, as before. --num-gpus overrides.
+                           # The price caps compare the whole box's price
 max_ram_gb = 64            # optional: drop offers whose host RAM exceeds this (or is unknown), e.g. so a model
                            # does not fit in page cache for benchmarks; default: no limit
 min_cpu_cores = 8          # optional: drop offers with fewer usable CPU cores (cpu_cores_effective); default: no limit
