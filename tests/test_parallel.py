@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import R, manage, offer, persist, tick
+from conftest import R, make_instance, manage, offer, persist, tick
 
 from taxameter import cli
 from taxameter import core as vc
@@ -225,3 +225,48 @@ def test_replacement_of_one_box_leaves_the_other_boxs_batch_and_current(env, mon
     assert started == ["999"] and s["current"] == "101"
     assert "100" not in s["batches"] and s["batches"]["101"]["script"] == "b.sh"
     assert R(ctx, 101)["role"] == "active" and not R(ctx, 101).get("need_replacement")
+
+
+def _bundle_query(fake):
+    return json.loads(fake.calls("POST", "/bundles/")[-1][2] or fake.calls("PUT", "/bundles/")[-1][2])
+
+
+def test_num_gpus_is_sent_default_one_flag_and_config(env):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 555, 0.3, 400)]
+    assert cli.main(["offers"], ctx) == 0
+    assert _bundle_query(fake)["num_gpus"] == {"eq": 1}  # unset: what was sent before the option existed
+    assert cli.main(["offers", "--num-gpus", "4"], ctx) == 0
+    assert _bundle_query(fake)["num_gpus"] == {"eq": 4}
+    ctx.cfg.offers.num_gpus = 2
+    assert cli.main(["offers"], ctx) == 0
+    assert _bundle_query(fake)["num_gpus"] == {"eq": 2}
+    assert cli.main(["offers", "--num-gpus", "1"], ctx) == 0  # the flag beats the config
+    assert _bundle_query(fake)["num_gpus"] == {"eq": 1}
+
+
+def test_offers_listing_shows_the_gpu_count(env, capsys):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 555, 0.9, 400, num_gpus=4)]
+    assert cli.main(["--json", "offers", "--num-gpus", "4"], ctx) == 0
+    assert json.loads(capsys.readouterr().out)["offers"][0]["num_gpus"] == 4
+    assert cli.main(["offers", "--num-gpus", "4"], ctx) == 0
+    assert "4x RTX 3090" in capsys.readouterr().out
+
+
+def test_status_shows_the_gpu_count(env, capsys):
+    ctx, fake, _ = env
+    fake.instances[100] = {**make_instance(100), "num_gpus": 2}
+    assert cli.main(["status"], ctx) == 0
+    assert "2x RTX 3090" in capsys.readouterr().out
+
+
+def test_create_rejects_an_explicit_offer_with_another_gpu_count(env, capsys):
+    ctx, fake, _ = env
+    fake.offers = [offer(1, 555, 0.9, 400, num_gpus=2)]  # a server that ignored the filter
+    assert cli.main(["create", "--offer", "1", "--max-price", "1"], ctx) != 0
+    assert "has 2 GPU(s), 1 requested" in capsys.readouterr().out
+    assert not fake.calls("PUT", "/asks/")
+    fake.offers = [offer(1, 555, 0.9, 400, num_gpus=2)]
+    assert cli.main(["create", "--offer", "1", "--num-gpus", "2", "--max-price", "1"], ctx) == 0
+    assert fake.calls("PUT", "/asks/")

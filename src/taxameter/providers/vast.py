@@ -171,6 +171,7 @@ def instance_from_row(row: dict) -> Instance:
         label=row.get("label") or "",
         endpoints=endpoints_from_instance(row),
         raw=row,
+        num_gpus=int(_num(row.get("num_gpus")) or 1),
         cpu_cores=_num(row.get("cpu_cores_effective")) or 0.0,
         inet_down_cost=_num(row.get("inet_down_cost")),
         # Vast reports kB: a box with 149 GB of models on disk showed 171966464 (2026-11-03)
@@ -184,7 +185,7 @@ def build_offer_query(q: OfferQuery) -> dict:
         "external": {"eq": False},
         "rentable": {"eq": True},
         "rented": {"eq": False},
-        "num_gpus": {"eq": 1},
+        "num_gpus": {"eq": q.num_gpus},
         "gpu_name": {"in": q.gpus},
         "gpu_ram": {"gte": q.min_vram_gb * 950},  # MiB; 5 % slack because a "24 GB" L4 reports 23034 MiB
         "reliability2": {"gte": q.min_reliability},
@@ -226,6 +227,7 @@ def offer_from_row(o: dict) -> Offer:
         ram_gb=float(o.get("cpu_ram") or 0) / 1024,  # MB
         cpu_cores=_num(o.get("cpu_cores_effective")) or 0.0,
         inet_down_cost=_num(o.get("inet_down_cost")),
+        num_gpus=int(_num(o.get("num_gpus")) or 1),
     )
 
 
