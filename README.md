@@ -78,6 +78,12 @@ Several boxes at once (`max_instances` above 1, ADR 0009): each agent drives its
 
 Run `watchdog --once` every few minutes from cron or Task Scheduler whenever a box may exist.
 
+On Windows, register it with `conhost.exe --headless` so it does not open a console window on every run:
+
+```bat
+schtasks /Create /TN <project>-vast-watchdog /SC MINUTE /MO 5 /F /TR "conhost.exe --headless cmd /c cd /d <repo> && uv run taxameter watchdog --once >> .vast\watchdog.out 2>&1"
+```
+
 Box age: `status`, `run`, `ssh -- cmd`, `provision`, `put`, `fetch` and `health` print `box age 2h41m of max 3h00m` (provider start time, else the time recorded by `create`/`adopt`) and warn past 80% of `max_box_hours`. `run` and `provision` refuse to start work on a box older than the cap unless you pass `--past-cap`; `fetch` and `destroy` are never blocked. The watchdog still stops such a box.
 
 ## Rules for agents
