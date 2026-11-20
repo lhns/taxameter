@@ -53,7 +53,7 @@ max_account_price_per_hour = 0.9  # optional: running + loading boxes on the who
                            # one may not cost more USD/h; default: off. Rents on one machine take a lock
 ```
 
-`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`). `[project] name` and `[policy] max_box_hours` are required.
+`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`). `[project] name` and `[policy] max_box_hours` are required. `offer_retries` (default 2) and `offer_retry_s` (default 10) set how often `create --offer ID` searches again when the offer is missing from the results.
 
 ## Usage
 
@@ -84,7 +84,7 @@ On Windows, register it with `conhost.exe --headless` so it does not open a cons
 schtasks /Create /TN <project>-vast-watchdog /SC MINUTE /MO 5 /F /TR "conhost.exe --headless cmd /c cd /d <repo> && uv run taxameter watchdog --once >> .vast\watchdog.out 2>&1"
 ```
 
-Box age: `status`, `run`, `ssh -- cmd`, `provision`, `put`, `fetch` and `health` print `box age 2h41m of max 3h00m` (provider start time, else the time recorded by `create`/`adopt`) and warn past 80% of `max_box_hours`. `run` and `provision` refuse to start work on a box older than the cap unless you pass `--past-cap`; `fetch` and `destroy` are never blocked. The watchdog still stops such a box.
+Box running time: `status`, `run`, `ssh -- cmd`, `provision`, `put`, `fetch` and `health` print `box running 2h41m of max 3h00m` (hours the box ran; time spent stopped does not count, ADR 0012) and warn past 80% of `max_box_hours`. `run` and `provision` refuse to start work on a box older than the cap unless you pass `--past-cap`; `fetch` and `destroy` are never blocked. The watchdog still stops such a box.
 
 ## Rules for agents
 
