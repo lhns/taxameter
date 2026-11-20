@@ -382,11 +382,10 @@ def ledger_note(rec: dict, running: bool, now: float) -> None:
         rec["running_s"] = 0.0
         rec["running_since"] = min(now, float(rec.get("created") or now))
     if running:
-        rec.setdefault("running_s", 0.0)
         if rec.get("running_since") is None:
             rec["running_since"] = now
     elif rec.get("running_since") is not None:
-        rec["running_s"] = float(rec.get("running_s", 0.0)) + max(0.0, now - float(rec["running_since"]))
+        rec["running_s"] = float(rec["running_s"]) + max(0.0, now - float(rec["running_since"]))
         rec["running_since"] = None
 
 
@@ -895,7 +894,8 @@ def rent(ctx: Ctx, search: Callable[[], list[Offer]], **kw: Any) -> tuple[str, O
     released during the waits, so a retrying rent never blocks the others."""
     retries = max(0, int(ctx.policy["offer_retries"])) if kw.get("only_offer") else 0
     wait_s = float(ctx.policy["offer_retry_s"])
-    for n in range(1, retries + 2):
+    n = 1
+    while True:
         try:
             return _rent_locked(ctx, search, **kw)
         except OfferMissing as e:
@@ -903,7 +903,7 @@ def rent(ctx: Ctx, search: Callable[[], list[Offer]], **kw: Any) -> tuple[str, O
                 raise RentRefused(f"{e} after {n} search{'es' if n > 1 else ''}", retry_later=False) from None
             say(f"offer {kw['only_offer']} not in search {n} of {retries + 1}; searching again in {wait_s:g} s")
             ctx.sleep(wait_s)
-    raise AssertionError("unreachable")
+            n += 1
 
 
 def _rent_locked(ctx: Ctx, search: Callable[[], list[Offer]], **kw: Any) -> tuple[str, Offer]:
