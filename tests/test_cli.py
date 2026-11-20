@@ -271,7 +271,7 @@ def test_commands_print_box_age_without_warning_when_young(env, capsys, tmp_path
     _aged(fake, 1)
     cli.main([a.replace("{f}", str(f)) for a in argv], ctx)
     out = capsys.readouterr().out
-    assert "box age 1h00m of max 3h00m" in out and "WARNING: box age" not in out
+    assert "box running 1h00m of max 3h00m" in out and "WARNING: box running" not in out
 
 
 def test_provision_prints_age_and_warns_past_80_percent(env, capsys):
@@ -280,7 +280,7 @@ def test_provision_prints_age_and_warns_past_80_percent(env, capsys):
     _aged(fake, 2.7)
     assert cli.main(["provision", "--models", "org/m:f.gguf"], ctx) == 0
     out = capsys.readouterr().out
-    assert "box age 2h42m of max 3h00m" in out and "past 80% of max_box_hours 3h00m" in out
+    assert "box running 2h42m of max 3h00m" in out and "past 80% of max_box_hours 3h00m" in out
 
 
 @pytest.mark.parametrize("argv", [["run", "scripts/job.sh"], ["provision", "--models", "org/m:f.gguf"]])
@@ -325,7 +325,7 @@ def test_adopt_records_provider_start_time_and_age_is_known(env, capsys):
     fake.fail = True  # API down: the recorded time still gives the age
     capsys.readouterr()
     vc.age_notice(ctx, "100")
-    assert "box age 3h12m" in capsys.readouterr().out
+    assert "box running 3h12m" in capsys.readouterr().out
 
 
 def test_no_age_line_when_age_unknown(env, capsys):
@@ -333,4 +333,4 @@ def test_no_age_line_when_age_unknown(env, capsys):
     manage(ctx, fake)
     fake.instances[100]["start_date"] = None
     assert cli.main(["run", "scripts/job.sh"], ctx) == 0
-    assert "box age" not in capsys.readouterr().out
+    assert "box running" not in capsys.readouterr().out

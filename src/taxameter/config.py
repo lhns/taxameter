@@ -49,6 +49,8 @@ DEFAULT_POLICY: dict[str, Any] = {
     "fetch_wait_min": 10,
     "nightly_wait_min": 90,  # `nightly` gives the on-box run this long, then fetches whatever exists
     "rent_attempts": 3,  # offers tried when the chosen one was taken meanwhile (OfferGone)
+    "offer_retries": 2,  # extra searches when `create --offer` is missing from the results (ADR 0012)
+    "offer_retry_s": 10,  # seconds between those searches
 }
 
 

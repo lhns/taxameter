@@ -91,6 +91,7 @@ def cmd_adopt(ctx: Ctx, a: argparse.Namespace) -> dict:
     with ctx.store.update() as st:
         rec = ctx.store.rec(a.instance, create=True)
         rec.update({"host_id": inst.host_id, "created": inst.started_at, "label": name, "role": "active"})
+        core.ledger_note(rec, inst.status in core.UP_STATUSES, time.time())  # ADR 0012
         for d in a.runs if a.runs is not None else ctx.cfg.results.dirs:
             rec["runs"].setdefault(d, {"ok": False})
         if not st.get("current"):  # like create: never take the default from another box (ADR 0009)
@@ -311,7 +312,7 @@ def cmd_simple(ctx: Ctx, a: argparse.Namespace) -> dict:
     if a.command == "stop":
         core.stop(ctx, iid, "(manual)")
     elif a.command == "start":
-        ctx.provider.start(iid)
+        core.start(ctx, iid)
         ctx.store.event("start requested (manual)", iid)
         if a.wait:
             core.wait_ready(ctx, iid, ctx.policy["create_wait_min"])

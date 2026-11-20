@@ -373,9 +373,39 @@ def fmt_hours(h: float) -> str:
     return f"{m // 60}h{m % 60:02d}m"
 
 
+def ledger_note(rec: dict, running: bool, now: float) -> None:
+    """Running-time ledger (ADR 0012): `running_s` accumulated, `running_since` set while running. Call with the
+    observed or requested state; a repeat of the same state changes nothing. The time of the transition seen is
+    used, so a change between two observations is booked at the later one. A record without a ledger is seeded as
+    running since its recorded start: its past is unknown and the cap errs high."""
+    if "running_s" not in rec:
+        rec["running_s"] = 0.0
+        rec["running_since"] = min(now, float(rec.get("created") or now))
+    if running:
+        rec.setdefault("running_s", 0.0)
+        if rec.get("running_since") is None:
+            rec["running_since"] = now
+    elif rec.get("running_since") is not None:
+        rec["running_s"] = float(rec.get("running_s", 0.0)) + max(0.0, now - float(rec["running_since"]))
+        rec["running_since"] = None
+
+
+def running_h(rec: dict, now: float) -> float | None:
+    """Hours the box ran according to the ledger, None for a record without one (old state files)."""
+    if "running_s" not in rec:
+        return None
+    since = rec.get("running_since")
+    return (float(rec["running_s"]) + (max(0.0, now - float(since)) if since is not None else 0.0)) / 3600
+
+
 def box_age_h(ctx: Ctx, iid: str, inst: Instance | None = None) -> float | None:
-    """Hours since the provider's start time of the box, else the time recorded at create/adopt; None if unknown.
+    """Hours the box has been running (ledger, ADR 0012). A record without a ledger falls back to the hours since
+    the provider's start time, else the time recorded at create/adopt; None if unknown.
     An API failure falls back to the record: a cost notice must never break the command."""
+    rec = ctx.store.state["instances"].get(str(iid), {})
+    ledger = running_h(rec, time.time())
+    if ledger is not None:
+        return ledger
     started = inst.started_at if inst else None
     if started is None and inst is None:
         try:
@@ -384,7 +414,7 @@ def box_age_h(ctx: Ctx, iid: str, inst: Instance | None = None) -> float | None:
         except ProviderError:
             pass
     if started is None:
-        started = ctx.store.state["instances"].get(str(iid), {}).get("created")
+        started = rec.get("created")
     return (time.time() - float(started)) / 3600 if started else None
 
 
@@ -394,16 +424,16 @@ def age_notice(ctx: Ctx, iid: str, inst: Instance | None = None, enforce: bool =
     age, cap = box_age_h(ctx, iid, inst), float(ctx.policy["max_box_hours"])
     if age is None:
         return
-    say(f"box age {fmt_hours(age)} of max {fmt_hours(cap)}")
+    say(f"box running {fmt_hours(age)} of max {fmt_hours(cap)}")
     if age > cap:
         if enforce and not past_cap:
             raise ProviderError(
-                f"box {iid} is {fmt_hours(age)} old, past max_box_hours {fmt_hours(cap)}: not starting new work "
+                f"box {iid} has run {fmt_hours(age)}, past max_box_hours {fmt_hours(cap)}: not starting new work "
                 "(fetch and destroy still work; pass --past-cap to override)"
             )
         say(f"WARNING: box is past max_box_hours {fmt_hours(cap)}: fetch results and destroy it")
     elif age > WARN_AGE_FRACTION * cap:
-        say(f"WARNING: box age is past 80% of max_box_hours {fmt_hours(cap)}: wrap up, fetch and destroy")
+        say(f"WARNING: box running time is past 80% of max_box_hours {fmt_hours(cap)}: wrap up, fetch and destroy")
 
 
 # ----------------------------------------------------------------------------------------------- ssh / scp
@@ -784,6 +814,8 @@ def create_instance(
                 "host_id": offer.host_id,
                 "role": "active" if make_current else "candidate",
                 "api_status": "loading",
+                "running_s": 0.0,  # ledger (ADR 0012): a created box starts running
+                "running_since": time.time(),
                 "image": image,
                 "offer": {
                     "id": offer.id,
@@ -813,6 +845,13 @@ class RentRefused(ProviderError):
     def __init__(self, msg: str, retry_later: bool = True) -> None:
         super().__init__(msg)
         self.retry_later = retry_later  # a changed market may help; a full account will not change by itself
+
+
+class OfferMissing(RentRefused):
+    """The explicit offer is not in this search; Vast results flicker, so `rent` may search again (ADR 0012)."""
+
+    def __init__(self, msg: str) -> None:
+        super().__init__(msg, retry_later=False)
 
 
 def check_cap(ctx: Ctx, overlap_with: str | None = None) -> list[Instance]:
@@ -851,7 +890,23 @@ def rent_lock_path() -> Path:
 
 def rent(ctx: Ctx, search: Callable[[], list[Offer]], **kw: Any) -> tuple[str, Offer]:
     """Serialise rents on this machine (ADR 0008): the lock is held from the cap checks until the create call
-    returns, so two local projects cannot both pass the account price check against the same running boxes."""
+    returns, so two local projects cannot both pass the account price check against the same running boxes.
+    An explicit `only_offer` missing from the search is searched again `offer_retries` times (ADR 0012); the lock is
+    released during the waits, so a retrying rent never blocks the others."""
+    retries = max(0, int(ctx.policy["offer_retries"])) if kw.get("only_offer") else 0
+    wait_s = float(ctx.policy["offer_retry_s"])
+    for n in range(1, retries + 2):
+        try:
+            return _rent_locked(ctx, search, **kw)
+        except OfferMissing as e:
+            if n > retries:
+                raise RentRefused(f"{e} after {n} search{'es' if n > 1 else ''}", retry_later=False) from None
+            say(f"offer {kw['only_offer']} not in search {n} of {retries + 1}; searching again in {wait_s:g} s")
+            ctx.sleep(wait_s)
+    raise AssertionError("unreachable")
+
+
+def _rent_locked(ctx: Ctx, search: Callable[[], list[Offer]], **kw: Any) -> tuple[str, Offer]:
     lock = FileLock(rent_lock_path())
     for _ in range(RENT_LOCK_WAIT_S):
         if lock.acquire():
@@ -914,9 +969,8 @@ def _rent(
         offers = picked
         if not offers:
             gpus = f", or has a GPU count other than {num_gpus}" if num_gpus is not None else ""
-            raise RentRefused(
-                f"offer {only_offer} is not among the filtered offers (blocklisted/over price/gone{gpus}?)",
-                retry_later=False,
+            raise OfferMissing(
+                f"offer {only_offer} is not among the filtered offers (blocklisted/over price/gone{gpus}?)"
             )
     elif not offers:
         raise RentRefused(f"no offers match under ${max_price}/h" if max_price is not None else "no offers match")
@@ -1258,11 +1312,20 @@ def destroy(ctx: Ctx, iid: str, force: bool = False, reason: str = "") -> bool:
     return True
 
 
+def start(ctx: Ctx, iid: str) -> None:
+    """Start a stopped box; the ledger counts it as running from the request (the cost guard errs high)."""
+    ctx.provider.start(str(iid))
+    with ctx.store.update() as st:
+        if str(iid) in st["instances"]:
+            ledger_note(st["instances"][str(iid)], True, time.time())
+
+
 def stop(ctx: Ctx, iid: str, reason: str = "") -> None:
     ctx.provider.stop(str(iid))
     with ctx.store.update() as st:
         if str(iid) in st["instances"]:
             st["instances"][str(iid)]["stop_requested"] = time.time()
+            ledger_note(st["instances"][str(iid)], False, time.time())
     ctx.store.event(f"stop requested {reason}".strip(), iid)
 
 
@@ -1323,6 +1386,10 @@ def _health_bookkeeping(
         rec.setdefault("idle_since", now)
     else:
         rec.pop("idle_since", None)
+    if status in UP_STATUSES:
+        ledger_note(rec, True, now)  # an unseen start is booked when first seen (ADR 0012)
+    elif status == "stopped":
+        ledger_note(rec, False, now)
     if status == "stopped":
         rec.setdefault("stopped_since", now)
     elif status == "running":
@@ -1488,8 +1555,9 @@ def _stop_over_max_hours(ctx: Ctx, flags: WatchFlags, iid: str, inst: Instance) 
     rec = st.rec(iid)
     if inst.status != "running":
         return False
-    started = inst.started_at or rec.get("created") or time.time()
-    hours = (time.time() - float(started)) / 3600
+    hours = running_h(rec, time.time())
+    if hours is None:  # a record without a ledger (ADR 0012): the provider's start time
+        hours = (time.time() - float(inst.started_at or rec.get("created") or time.time())) / 3600
     if hours < pol["max_box_hours"]:
         return False
     if time.time() - rec.get("stop_requested", 0) < 600:  # already asked; the API status may lag
@@ -1644,7 +1712,7 @@ def _tick_salvage(ctx: Ctx, flags: WatchFlags, iid: str, inst: Instance) -> dict
         with st.update():
             st.rec(iid).pop("salvage_window_start", None)
         if (now - rec.get("last_salvage_attempt", 0)) / 3600 >= pol["salvage_every_h"]:
-            ctx.provider.start(iid)
+            start(ctx, iid)
             st.patch(iid, salvage_window_start=now, last_salvage_attempt=now)
             st.event(f"salvage: started old instance for a {pol['salvage_window_min']} min fetch window", iid)
     return info
