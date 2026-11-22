@@ -771,7 +771,7 @@ def offers_map_path(ctx: Ctx) -> Path:
 
 
 def record_offer_machines(ctx: Ctx, offers: list[Offer]) -> None:
-    """ADR 0012 addendum: remember which machine each listed offer id belongs to (the last listing only), so a
+    """ADR 0013: remember which machine each listed offer id belongs to (the last listing only), so a
     later `create --offer ID` in another process can follow an id that rotated."""
     rec = {
         o.id: {"machine_id": o.machine_id, "num_gpus": o.num_gpus, "gpu_name": o.gpu_name}
@@ -966,7 +966,7 @@ def check_account_price(offer: Offer, up: list[Instance], ceiling: float) -> str
 
 
 def _rotated(ctx: Ctx, offer_id: str, search_machine: Callable[[str], list[Offer]] | None) -> list[Offer]:
-    """ADR 0012 addendum: the same machine under a new offer id (same GPU count and name, same filters and caps),
+    """ADR 0013: the same machine under a new offer id (same GPU count and name, same filters and caps),
     else []. The machine of the old id comes from the last `offers` listing."""
     rec = recorded_machine(ctx, offer_id)
     if rec is None or search_machine is None:

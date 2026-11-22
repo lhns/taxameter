@@ -1,4 +1,4 @@
-"""ADR 0012 addendum: `create --offer ID` follows a rotated offer id to the same machine."""
+"""ADR 0013: `create --offer ID` follows a rotated offer id to the same machine."""
 
 from __future__ import annotations
 

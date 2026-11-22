@@ -94,7 +94,7 @@ class OfferQuery:
     min_cpu_cores: float = 0  # 0: no filter
     max_inet_down_cost: float = 0  # USD per GB; 0: no filter
     num_gpus: int = 1  # exact GPU count of the box (ADR 0011)
-    machine_id: str | None = None  # only this machine's offers (follows a rotated offer id, ADR 0012)
+    machine_id: str | None = None  # only this machine's offers (follows a rotated offer id, ADR 0013)
 
 
 @dataclass
