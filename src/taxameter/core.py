@@ -1018,8 +1018,8 @@ def _rent(
         if not offers:
             gpus = f", or has a GPU count other than {num_gpus}" if num_gpus is not None else ""
             raise OfferMissing(
-                f"offer {only_offer} is gone: not among the filtered offers (blocklisted/over price{gpus}?) and "
-                f"its machine has no matching offer; try `create --auto` with the same filters"
+                f"offer {only_offer} is not among the filtered offers (gone, blocklisted or over price{gpus}?) and "
+                f"no offer on its machine matches; try `create --auto` with the same filters"
             )
     elif not offers:
         raise RentRefused(f"no offers match under ${max_price}/h" if max_price is not None else "no offers match")

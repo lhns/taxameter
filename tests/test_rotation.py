@@ -72,7 +72,7 @@ def test_unknown_id_fails_with_the_auto_hint(env, capsys):
     ctx.sleep = lambda s: None
     assert cli.main(["create", "--offer", "99"], ctx) == 1  # no map yet
     out = capsys.readouterr().out
-    assert "offer 99 is gone" in out and "create --auto" in out
+    assert "offer 99 is not among the filtered offers" in out and "create --auto" in out
     assert not machine_queries(fake) and not asks(fake)
 
 
