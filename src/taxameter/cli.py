@@ -45,6 +45,7 @@ def cmd_balance(ctx: Ctx, a: argparse.Namespace) -> dict:
 
 def cmd_offers(ctx: Ctx, a: argparse.Namespace) -> dict:
     offers = core.search_offers(ctx, a)
+    core.record_offer_machines(ctx, offers)
     say(
         f"{len(offers)} offers after filters (blocklist: {', '.join(sorted(ctx.store.blocklist()))}); "
         f"top {min(a.top, len(offers))} by {a.sort}:"
@@ -71,6 +72,7 @@ def cmd_create(ctx: Ctx, a: argparse.Namespace) -> dict:
         only_offer=a.offer,
         max_price=max_price,
         num_gpus=core.requested_num_gpus(ctx, a),
+        search_machine=lambda m: core.search_offers(ctx, a, max_price=max_price, machine_id=m),
     )
     ep = core.wait_ready(ctx, iid, ctx.policy["create_wait_min"])
     return {"id": iid, "endpoint": str(ep) if ep else None, "current": ctx.store.state.get("current")}

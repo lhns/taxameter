@@ -88,7 +88,9 @@ class FakeVast:
         if p == "/api/v1/instances/":
             return httpx.Response(200, json={"instances": list(self.instances.values()), "next_token": None})
         if p == "/api/v0/bundles/":
-            return httpx.Response(200, json={"offers": self.offers})
+            want = (json.loads(req.content or b"{}").get("machine_id") or {}).get("eq")
+            rows = [o for o in self.offers if want is None or o.get("machine_id") == want]
+            return httpx.Response(200, json={"offers": rows})
         m = re.fullmatch(r"/api/v0/asks/(\d+)/", p)
         if m and req.method == "PUT":
             if self.create_mode == "timeout":

@@ -56,6 +56,7 @@ class Offer:
     traffic_per_h: float = 0.0  # expected download cost per box hour (set by the core, ADR 0010)
     num_gpus: int = 1  # GPUs in the box; price_per_h is for all of them
     effective_price_per_h: float = 0.0  # price_per_h + traffic_per_h; informational, caps use price_per_h
+    machine_id: str | None = None  # stable across offer-id rotation; None on providers without machine ids
 
     def __post_init__(self) -> None:
         if not self.effective_price_per_h:
@@ -93,6 +94,7 @@ class OfferQuery:
     min_cpu_cores: float = 0  # 0: no filter
     max_inet_down_cost: float = 0  # USD per GB; 0: no filter
     num_gpus: int = 1  # exact GPU count of the box (ADR 0011)
+    machine_id: str | None = None  # only this machine's offers (follows a rotated offer id, ADR 0012)
 
 
 @dataclass
