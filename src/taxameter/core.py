@@ -724,7 +724,11 @@ def requested_num_gpus(ctx: Ctx, a: argparse.Namespace | None = None) -> int:
 
 
 def search_offers(
-    ctx: Ctx, a: argparse.Namespace | None = None, extra_block: set[str] | None = None, max_price: float | None = None
+    ctx: Ctx,
+    a: argparse.Namespace | None = None,
+    extra_block: set[str] | None = None,
+    max_price: float | None = None,
+    machine_id: str | None = None,
 ) -> list[Offer]:
     """Ranked offers. Filters come from the CLI flags, else from [offers] of the config."""
     off = ctx.cfg.offers
@@ -745,6 +749,7 @@ def search_offers(
         min_cpu_cores=float(g("min_cpu_cores", off.min_cpu_cores)),
         max_inet_down_cost=float(off.max_inet_down_cost),
         num_gpus=requested_num_gpus(ctx, a),
+        machine_id=machine_id,
     )
     block = ctx.store.blocklist() | set(extra_block or set())
     block |= {h.strip() for h in (g("exclude_hosts", "") or "").split(",") if h.strip()}
@@ -759,6 +764,33 @@ def search_offers(
         download_gb=float(g("download_gb", off.expected_download_gb)),
         box_hours=float(off.expected_box_hours or ctx.policy["max_box_hours"]),
     )
+
+
+def offers_map_path(ctx: Ctx) -> Path:
+    return ctx.store.dir / "offers.json"
+
+
+def record_offer_machines(ctx: Ctx, offers: list[Offer]) -> None:
+    """ADR 0013: remember which machine each listed offer id belongs to (the last listing only), so a
+    later `create --offer ID` in another process can follow an id that rotated."""
+    rec = {
+        o.id: {"machine_id": o.machine_id, "num_gpus": o.num_gpus, "gpu_name": o.gpu_name}
+        for o in offers
+        if o.machine_id
+    }
+    path = offers_map_path(ctx)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rec), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def recorded_machine(ctx: Ctx, offer_id: str) -> dict | None:
+    try:
+        rec = json.loads(offers_map_path(ctx).read_text(encoding="utf-8")).get(str(offer_id))
+    except (OSError, ValueError, AttributeError):
+        return None
+    return rec if isinstance(rec, dict) and rec.get("machine_id") else None
 
 
 def billed_download_cost(i: Instance) -> float | None:
@@ -933,6 +965,19 @@ def check_account_price(offer: Offer, up: list[Instance], ceiling: float) -> str
     )
 
 
+def _rotated(ctx: Ctx, offer_id: str, search_machine: Callable[[str], list[Offer]] | None) -> list[Offer]:
+    """ADR 0013: the same machine under a new offer id (same GPU count and name, same filters and caps),
+    else []. The machine of the old id comes from the last `offers` listing."""
+    rec = recorded_machine(ctx, offer_id)
+    if rec is None or search_machine is None:
+        return []
+    for o in search_machine(str(rec["machine_id"])):
+        if o.machine_id == str(rec["machine_id"]) and o.num_gpus == rec["num_gpus"] and o.gpu_name == rec["gpu_name"]:
+            say(f"offer {offer_id} rotated: using {o.id} (same machine {rec['machine_id']})")
+            return [o]
+    return []
+
+
 def _rent(
     ctx: Ctx,
     search: Callable[[], list[Offer]],
@@ -948,6 +993,7 @@ def _rent(
     max_price: float | None = None,
     announce: str = "renting ",
     num_gpus: int | None = None,
+    search_machine: Callable[[str], list[Offer]] | None = None,
 ) -> tuple[str, Offer]:
     """The one place that rents (under the rent lock). (1) Per-project cap. (2) Try the ranked offers in order, at
     most rent_attempts: per offer the account price ceiling and the runway check, then create. OfferGone (taken
@@ -968,9 +1014,12 @@ def _rent(
             )
         offers = picked
         if not offers:
+            offers = _rotated(ctx, str(only_offer), search_machine)
+        if not offers:
             gpus = f", or has a GPU count other than {num_gpus}" if num_gpus is not None else ""
             raise OfferMissing(
-                f"offer {only_offer} is not among the filtered offers (blocklisted/over price/gone{gpus}?)"
+                f"offer {only_offer} is not among the filtered offers (gone, blocklisted or over price{gpus}?) and "
+                f"no offer on its machine matches; try `create --auto` with the same filters"
             )
     elif not offers:
         raise RentRefused(f"no offers match under ${max_price}/h" if max_price is not None else "no offers match")

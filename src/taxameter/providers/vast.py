@@ -198,6 +198,8 @@ def build_offer_query(q: OfferQuery) -> dict:
         "limit": q.limit,
         "allocated_storage": q.min_disk_gb,
     }
+    if q.machine_id:
+        query["machine_id"] = {"eq": int(q.machine_id)}
     if q.min_cpu_cores:
         query["cpu_cores_effective"] = {"gte": q.min_cpu_cores}
     if q.max_inet_down_cost:
@@ -217,6 +219,7 @@ def offer_from_row(o: dict) -> Offer:
     return Offer(
         id=str(o["id"]),
         host_id=_host(o),
+        machine_id=str(o["machine_id"]) if o.get("machine_id") is not None else None,
         gpu_name=o.get("gpu_name") or "?",
         vram_gb=float(o.get("gpu_ram") or 0) / 1024,
         price_per_h=float(o.get("dph_total") or 0.0),

@@ -53,7 +53,7 @@ max_account_price_per_hour = 0.9  # optional: running + loading boxes on the who
                            # one may not cost more USD/h; default: off. Rents on one machine take a lock
 ```
 
-`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`). `[project] name` and `[policy] max_box_hours` are required. `offer_retries` (default 2) and `offer_retry_s` (default 10) set how often `create --offer ID` searches again when the offer is missing from the results.
+`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`). `[project] name` and `[policy] max_box_hours` are required. `offer_retries` (default 2) and `offer_retry_s` (default 10) set how often `create --offer ID` searches again when the offer is missing from the results. If the id rotated, `create --offer` takes the same machine's current offer, using the machine recorded by the last `offers` listing (`offers.json` in the state dir, ADR 0013).
 
 ## Usage
 
