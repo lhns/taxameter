@@ -100,6 +100,11 @@ class FakeVast:
             if int(m.group(1)) in self.gone_asks:
                 return httpx.Response(400, json=GONE_BODY)
             self.instances[999] = make_instance(999, host_id=777)
+            for key in json.loads(req.content).get("env") or {}:  # Vast maps each "-p N:N[/udp]" to a public port
+                m2 = re.fullmatch(r"-p (\d+):\1(/udp)?", key)
+                if m2:
+                    maps = [{"HostIp": "0.0.0.0", "HostPort": str(30000 + int(m2.group(1)))}]
+                    self.instances[999]["ports"][f"{m2.group(1)}/{'udp' if m2.group(2) else 'tcp'}"] = maps
             return httpx.Response(200, json={"success": True, "new_contract": 999, "instance_api_key": INSTANCE_KEY})
         if re.fullmatch(r"/api/v0/instances/reboot/(\d+)/", p):
             return httpx.Response(200, json={"success": True})

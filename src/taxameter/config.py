@@ -64,6 +64,27 @@ class ConfigError(ValueError):
     pass
 
 
+def parse_ports(items: list[str] | None) -> list[str]:
+    """Normalise port specs (`PORT`, `PORT/tcp`, `PORT/udp`; each item may be a comma list) to `PORT/proto`,
+    in order and without duplicates. SSH (22/tcp) is always published, so it is refused here (ADR 0013)."""
+    out: list[str] = []
+    for item in items or []:
+        for raw in str(item).split(","):
+            spec = raw.strip()
+            if not spec:
+                continue
+            num, sep, proto = spec.partition("/")
+            proto = proto.lower() if sep else "tcp"
+            if not num.isdigit() or not 1 <= int(num) <= 65535 or proto not in ("tcp", "udp"):
+                raise ConfigError(f"bad port {spec!r}: expected PORT, PORT/tcp or PORT/udp with PORT 1 to 65535")
+            norm = f"{int(num)}/{proto}"
+            if norm == "22/tcp":
+                raise ConfigError("port 22/tcp is the SSH port and always published")
+            if norm not in out:
+                out.append(norm)
+    return out
+
+
 @dataclass
 class Project:
     name: str = ""  # required: instance label (the per-project cap counts it); remote dir default /root/<name>
@@ -122,6 +143,7 @@ class Box:
     provision_hook: str = ""  # repo-relative script run during provision
     verify_hook: str = ""  # repo-relative script run by verify (replacement acceptance)
     run_env: dict[str, str] = field(default_factory=dict)  # env for `run` and `nightly`
+    ports: list[str] = field(default_factory=list)  # published on every new box besides SSH; --ports overrides
 
 
 @dataclass
@@ -274,6 +296,7 @@ def load(path: Path | None = None) -> Config:
     missing = [k for k in REQUIRED_POLICY if k not in policy]
     if missing:
         raise ConfigError(f"{path}: [policy] {', '.join(missing)} is required (no default: it caps spend per box)")
+    cfg.box.ports = parse_ports(cfg.box.ports)
     cfg.policy.update(policy)
     return cfg
 
