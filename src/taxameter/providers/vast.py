@@ -145,6 +145,30 @@ def endpoints_from_instance(inst: dict | None) -> list[Endpoint]:
     return eps
 
 
+def ports_from_instance(inst: dict | None) -> dict[str, Endpoint]:
+    """Published ports other than SSH: Vast keys `ports` by "7000/udp" and lists {HostIp, HostPort} mappings; the
+    public host is `public_ipaddr`."""
+    if not inst:
+        return {}
+    ip = (inst.get("public_ipaddr") or "").strip()
+    out: dict[str, Endpoint] = {}
+    for key, maps in (inst.get("ports") or {}).items():
+        if key == "22/tcp" or not ip or not maps or not str(maps[0].get("HostPort") or "").isdigit():
+            continue
+        out[key] = Endpoint("direct", ip, int(maps[0]["HostPort"]))
+    return out
+
+
+def port_env(ports: tuple[str, ...]) -> dict[str, str]:
+    """Vast publishes the ports named in `env` as docker flags, as the vastai CLI's `--env "-p 7000:7000/udp"`
+    does: one key `-p PORT:PORT[/udp]` with value "1" per port (ADR 0014)."""
+    env = {}
+    for p in ports:
+        num, proto = p.split("/")
+        env[f"-p {num}:{num}" + ("/udp" if proto == "udp" else "")] = "1"
+    return env
+
+
 def _host(row: dict) -> str | None:
     return str(row["host_id"]) if row.get("host_id") is not None else None
 
@@ -170,6 +194,7 @@ def instance_from_row(row: dict) -> Instance:
         started_at=float(started) if started else None,
         label=row.get("label") or "",
         endpoints=endpoints_from_instance(row),
+        ports=ports_from_instance(row),
         raw=row,
         num_gpus=int(_num(row.get("num_gpus")) or 1),
         cpu_cores=_num(row.get("cpu_cores_effective")) or 0.0,
@@ -272,7 +297,7 @@ class VastProvider:
         payload = {
             "client_id": "me",
             "image": spec.image,
-            "env": {},
+            "env": port_env(spec.ports),
             "disk": spec.disk_gb,
             "label": spec.label,
             "runtype": "ssh_direc ssh_proxy",

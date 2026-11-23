@@ -31,6 +31,9 @@ def parse_env(pairs: list[str] | None) -> dict[str, str]:
     return env
 
 
+PORTS_HELP = "publish PORT, PORT/tcp or PORT/udp besides SSH; repeat or comma-separate (default [box] ports)"
+
+
 # ----------------------------------------------------------------------------------------------- commands
 def cmd_balance(ctx: Ctx, a: argparse.Namespace) -> dict:
     s = core.spend_summary(ctx.provider.credit(), ctx.provider.instances())
@@ -59,10 +62,26 @@ def cmd_offers(ctx: Ctx, a: argparse.Namespace) -> dict:
     return {"offers": [{k: getattr(o, k) for k in keys} for o in offers[: a.top]]}
 
 
+def show_ports(ctx: Ctx, iid: str) -> dict[str, str]:
+    """Print and return the public host:port of the box's requested ports (empty when none were requested)."""
+    wanted = ctx.store.rec(iid).get("ports") or []
+    if not wanted:
+        return {}
+    inst = ctx.provider.instance(iid)
+    have = inst.ports if inst else {}
+    out = {}
+    for p in wanted:
+        ep = have.get(p)
+        out[p] = f"{ep.host}:{ep.port}" if ep else ""
+        say(f"port {p} -> {out[p] or 'not mapped (yet)'}")
+    return out
+
+
 def cmd_create(ctx: Ctx, a: argparse.Namespace) -> dict:
     if not (a.offer or a.auto):
         raise ProviderError("pass --offer ID or --auto")
     max_price = a.max_price if a.max_price is not None else ctx.policy["max_price_per_hour"]
+    ports = config.parse_ports(a.ports) if a.ports else None  # validated before anything is rented
     iid, _ = core.rent(
         ctx,
         lambda: core.search_offers(ctx, a, max_price=max_price),
@@ -73,9 +92,11 @@ def cmd_create(ctx: Ctx, a: argparse.Namespace) -> dict:
         max_price=max_price,
         num_gpus=core.requested_num_gpus(ctx, a),
         search_machine=lambda m: core.search_offers(ctx, a, max_price=max_price, machine_id=m),
+        ports=ports,
     )
     ep = core.wait_ready(ctx, iid, ctx.policy["create_wait_min"])
-    return {"id": iid, "endpoint": str(ep) if ep else None, "current": ctx.store.state.get("current")}
+    mapped = show_ports(ctx, iid)
+    return {"id": iid, "endpoint": str(ep) if ep else None, "current": ctx.store.state.get("current"), "ports": mapped}
 
 
 def cmd_nightly(ctx: Ctx, a: argparse.Namespace) -> dict:
@@ -119,6 +140,8 @@ def cmd_endpoint(ctx: Ctx, a: argparse.Namespace) -> dict:
             remote._mark_ok(ep)
     if not inst.endpoints:
         say(f"no SSH endpoints (status {inst.status})")
+    if str(iid) in st.state["instances"]:
+        res["ports"] = show_ports(ctx, iid)
     return res
 
 
@@ -396,6 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--auto", action="store_true", help="best score within max price")
             s.add_argument("--allow-second", action="store_true", help="skip the per-project instance cap")
             s.add_argument("--image", help="container image (default [image] in taxameter.toml)")
+            s.add_argument("--ports", action="append", help=PORTS_HELP)
     s = sub.add_parser("adopt", parents=[common], help="manage an existing instance")
     s.add_argument("instance")
     s.add_argument("--runs", nargs="*", help="run dirs on the box to track for fetch (default [results] dirs)")
@@ -421,6 +445,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--models", default="", help="comma list of org/name:file (default: [models] of the config)")
     s.add_argument("--image", help="container image (default [image] in taxameter.toml)")
+    s.add_argument("--ports", action="append", help=PORTS_HELP)
     s.add_argument("--gpu", help="comma list (default [offers] gpus)")
     s.add_argument("--max-price", type=float)
     s.add_argument("--wait-min", type=float, help="how long to wait for the on-box run (default nightly_wait_min)")

@@ -79,6 +79,7 @@ class Instance:
     inet_down_cost: float | None = None  # USD per GB downloaded; None when unknown
     inet_down_billed_gb: float | None = None  # traffic billed so far
     num_gpus: int = 1
+    ports: dict[str, Endpoint] = field(default_factory=dict)  # "7000/udp" -> public host:port (ADR 0014)
 
 
 @dataclass
@@ -94,7 +95,7 @@ class OfferQuery:
     min_cpu_cores: float = 0  # 0: no filter
     max_inet_down_cost: float = 0  # USD per GB; 0: no filter
     num_gpus: int = 1  # exact GPU count of the box (ADR 0011)
-    machine_id: str | None = None  # only this machine's offers (follows a rotated offer id, ADR 0013)
+    machine_id: str | None = None  # only this machine's offers (follows a rotated offer id, ADR 0014)
 
 
 @dataclass
@@ -104,6 +105,7 @@ class CreateSpec:
     label: str
     onstart: str
     interruptible: bool = False
+    ports: tuple[str, ...] = ()  # normalised "PORT/tcp" or "PORT/udp" to publish besides SSH (ADR 0014)
 
 
 class Provider(Protocol):

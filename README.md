@@ -53,7 +53,17 @@ max_account_price_per_hour = 0.9  # optional: running + loading boxes on the who
                            # one may not cost more USD/h; default: off. Rents on one machine take a lock
 ```
 
-`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`). `[project] name` and `[policy] max_box_hours` are required. `offer_retries` (default 2) and `offer_retry_s` (default 10) set how often `create --offer ID` searches again when the offer is missing from the results. If the id rotated, `create --offer` takes the same machine's current offer, using the machine recorded by the last `offers` listing (`offers.json` in the state dir, ADR 0013).
+`[policy]` holds the cap and watchdog thresholds (defaults in `config.py`). `[project] name` and `[policy] max_box_hours` are required. `offer_retries` (default 2) and `offer_retry_s` (default 10) set how often `create --offer ID` searches again when the offer is missing from the results. If the id rotated, `create --offer` takes the same machine's current offer, using the machine recorded by the last `offers` listing (`offers.json` in the state dir, ADR 0014).
+
+## Ports
+
+Only SSH is published by default. `create --ports 7000,7001/udp` (also `nightly`; repeat the flag or comma-separate; `PORT` means tcp) publishes more ports, and `[box] ports = ["7000/tcp", "7001/udp"]` sets the default (the flag replaces it; [ADR 0014](docs/adr/0014-create-ports.md)). `create` then prints the public mapping, and `endpoint` prints it again later (Vast picks new public ports on every restart):
+
+```
+port 7001/udp -> 203.0.113.7:41234
+```
+
+`--json` has `ports: {"7001/udp": "203.0.113.7:41234"}`. The Vast request carries `env: {"-p 7001:7001/udp": "1"}`, the form of the vastai CLI's `--env "-p ..."`.
 
 ## Usage
 

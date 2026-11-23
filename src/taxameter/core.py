@@ -830,12 +830,16 @@ def create_instance(
     reason: str = "",
     make_current: bool = True,
     image: str | None = None,
+    ports: list[str] | None = None,
 ) -> str:
     st = ctx.store
     image = image or ctx.cfg.image_ref()
     pub = ctx.ssh_key.with_name(ctx.ssh_key.name + ".pub")
     pubkey = pub.read_text(encoding="utf-8") if pub.is_file() else None
-    spec = CreateSpec(image, ctx.policy["disk_gb"], ctx.cfg.project.name, boxenv.onstart(pubkey), interruptible)
+    ports = ctx.cfg.box.ports if ports is None else ports
+    spec = CreateSpec(
+        image, ctx.policy["disk_gb"], ctx.cfg.project.name, boxenv.onstart(pubkey), interruptible, tuple(ports)
+    )
     iid = ctx.provider.create(offer, spec)
     with st.update():
         st.rec(iid, create=True).update(
@@ -848,6 +852,7 @@ def create_instance(
                 "running_s": 0.0,  # ledger (ADR 0012): a created box starts running
                 "running_since": time.time(),
                 "image": image,
+                "ports": list(ports),
                 "offer": {
                     "id": offer.id,
                     "gpu_name": offer.gpu_name,
@@ -994,6 +999,7 @@ def _rent(
     announce: str = "renting ",
     num_gpus: int | None = None,
     search_machine: Callable[[str], list[Offer]] | None = None,
+    ports: list[str] | None = None,
 ) -> tuple[str, Offer]:
     """The one place that rents (under the rent lock). (1) Per-project cap. (2) Try the ranked offers in order, at
     most rent_attempts: per offer the account price ceiling and the runway check, then create. OfferGone (taken
@@ -1043,7 +1049,7 @@ def _rent(
                 )
         say(announce + offer_line(offer))
         try:
-            return create_instance(ctx, offer, interruptible, reason, make_current, image), offer
+            return create_instance(ctx, offer, interruptible, reason, make_current, image, ports), offer
         except OfferGone as e:
             tried.append(offer.id)
             st.event(f"offer {offer.id} (host {offer.host_id}) was taken meanwhile: {e}")
@@ -1823,6 +1829,7 @@ def _replace_one(ctx: Ctx, flags: WatchFlags, old_id: str) -> None:
             overlap_with=old_id,
             check_runway=True,  # the combined rate during the overlap
             max_price=max_price,
+            ports=old.get("ports"),
         )
     except RentRefused as e:
         st.pend("replace", f"replacement needed but not rented: {e}")
@@ -1964,6 +1971,7 @@ def _nightly_locked(ctx: Ctx, a: argparse.Namespace) -> dict:
         lambda: search_offers(ctx, a, max_price=max_price),
         reason="(nightly)",
         image=a.image,
+        ports=config.parse_ports(a.ports) if a.ports else None,
         check_runway=True,
         max_price=max_price,
         announce="nightly: renting ",
